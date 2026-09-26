@@ -1,0 +1,438 @@
+package com.example
+
+import android.content.Intent
+import android.net.Uri
+import android.os.Bundle
+import android.widget.Toast
+import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CloudSync
+import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Explore
+import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.Language
+import androidx.compose.material.icons.filled.Public
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.outlined.CloudSync
+import androidx.compose.material.icons.outlined.Download
+import androidx.compose.material.icons.outlined.Folder
+import androidx.compose.material.icons.outlined.Language
+import androidx.compose.material.icons.outlined.Public
+import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBarItemDefaults
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.fragment.app.FragmentActivity
+import androidx.lifecycle.ViewModelProvider
+import com.example.data.model.DownloadedMedia
+import com.example.ui.components.BrowserView
+import com.example.ui.components.CloudSyncTab
+import com.example.ui.components.DownloadsTab
+import com.example.ui.components.FileManagementTab
+import com.example.ui.components.LockScreen
+import com.example.ui.components.MediaPlayerDialog
+import com.example.ui.components.MediaSnifferBottomSheet
+import com.example.ui.components.RenameFileDialog
+import com.example.ui.components.SettingsTab
+import com.example.ui.components.SitesHubTab
+import com.example.ui.theme.MediaFetchTheme
+import com.example.ui.viewmodel.AppTab
+import com.example.ui.viewmodel.MainViewModel
+
+class MainActivity : FragmentActivity() {
+
+    private lateinit var viewModel: MainViewModel
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        try {
+            android.system.Os.setenv("MESA_LOG_FILE", "/dev/null", true)
+            android.system.Os.setenv("MESA_LOG_LEVEL", "none", true)
+            android.system.Os.setenv("MESA_NO_ERROR", "1", true)
+            android.system.Os.setenv("MESA_DEBUG", "silent", true)
+            android.system.Os.setenv("LIBGL_ALWAYS_SOFTWARE", "1", true)
+            android.system.Os.setenv("LIBGL_DRI3_DISABLE", "1", true)
+            android.system.Os.setenv("GALLIUM_DRIVER", "llvmpipe", true)
+            android.system.Os.setenv("MESA_LOADER_DRIVER_OVERRIDE", "llvmpipe", true)
+        } catch (_: Throwable) {}
+
+        super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
+
+        viewModel = ViewModelProvider(
+            this,
+            ViewModelProvider.AndroidViewModelFactory.getInstance(application)
+        )[MainViewModel::class.java]
+
+        setContent {
+            val themeMode by viewModel.themeMode.collectAsState()
+            val accentColor by viewModel.accentColor.collectAsState()
+
+            MediaFetchTheme(
+                themeMode = themeMode,
+                accentColor = accentColor
+            ) {
+                MainAppScreen(
+                    viewModel = viewModel,
+                    onShareMedia = { media -> shareMedia(media) }
+                )
+            }
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (::viewModel.isInitialized) {
+            viewModel.checkBatteryOptimizationStatus()
+        }
+    }
+
+    override fun onStop() {
+        super.onStop()
+        // Lock app on minimize if security lock is enabled
+        viewModel.lockApp()
+    }
+
+    private fun shareMedia(media: DownloadedMedia) {
+        try {
+            val sendIntent: Intent = Intent().apply {
+                action = Intent.ACTION_SEND
+                putExtra(Intent.EXTRA_TEXT, "Shared from MediaFetch: ${media.title}\nSource: ${media.sourceUrl}")
+                type = "text/plain"
+            }
+            val shareIntent = Intent.createChooser(sendIntent, "Share Media")
+            startActivity(shareIntent)
+        } catch (_: Exception) {
+            Toast.makeText(this, "Unable to share media", Toast.LENGTH_SHORT).show()
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun MainAppScreen(
+    viewModel: MainViewModel,
+    onShareMedia: (DownloadedMedia) -> Unit
+) {
+    val isAppLocked by viewModel.isAppLocked.collectAsState()
+    val currentTab by viewModel.currentTab.collectAsState()
+    val browserUrl by viewModel.browserUrl.collectAsState()
+    val isDesktopMode by viewModel.isDesktopMode.collectAsState()
+    val detectedMediaList by viewModel.detectedMediaList.collectAsState()
+    val isMediaSnifferOpen by viewModel.isMediaSnifferOpen.collectAsState()
+    val activeDownloads by viewModel.activeDownloads.collectAsState()
+    val completedMedia by viewModel.completedMedia.collectAsState()
+    val bookmarks by viewModel.bookmarks.collectAsState()
+    val filteredFiles by viewModel.filteredFiles.collectAsState()
+    val searchQuery by viewModel.searchQuery.collectAsState()
+    val selectedCategoryFilter by viewModel.selectedCategoryFilter.collectAsState()
+    val sortOption by viewModel.sortOption.collectAsState()
+    val layoutStyle by viewModel.layoutStyle.collectAsState()
+    val selectedMediaForPlayer by viewModel.selectedMediaForPlayer.collectAsState()
+    val renameTarget by viewModel.renameTarget.collectAsState()
+    val themeMode by viewModel.themeMode.collectAsState()
+    val accentColor by viewModel.accentColor.collectAsState()
+    val isBatteryRestricted by viewModel.isBatteryRestricted.collectAsState()
+    val isBatteryAlertDismissed by viewModel.isBatteryAlertDismissed.collectAsState()
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        Scaffold(
+            bottomBar = {
+                if (!isAppLocked) {
+                    NavigationBar(
+                        containerColor = MaterialTheme.colorScheme.surface,
+                        tonalElevation = 6.dp,
+                        modifier = Modifier.testTag("main_navigation_bar")
+                    ) {
+                        // Browser Tab
+                        NavigationBarItem(
+                            selected = currentTab == AppTab.BROWSER,
+                            onClick = { viewModel.selectTab(AppTab.BROWSER) },
+                            icon = {
+                                BadgedBox(
+                                    badge = {
+                                        if (detectedMediaList.isNotEmpty()) {
+                                            Badge { Text("${detectedMediaList.size}") }
+                                        }
+                                    }
+                                ) {
+                                    Icon(
+                                        imageVector = if (currentTab == AppTab.BROWSER) Icons.Filled.Language else Icons.Outlined.Language,
+                                        contentDescription = "Browser"
+                                    )
+                                }
+                            },
+                            label = { Text("Browser", fontSize = 11.sp) },
+                            modifier = Modifier.testTag("nav_item_browser")
+                        )
+
+                        // Downloads Tab
+                        NavigationBarItem(
+                            selected = currentTab == AppTab.DOWNLOADS,
+                            onClick = { viewModel.selectTab(AppTab.DOWNLOADS) },
+                            icon = {
+                                BadgedBox(
+                                    badge = {
+                                        if (activeDownloads.isNotEmpty()) {
+                                            Badge { Text("${activeDownloads.size}") }
+                                        }
+                                    }
+                                ) {
+                                    Icon(
+                                        imageVector = if (currentTab == AppTab.DOWNLOADS) Icons.Filled.Download else Icons.Outlined.Download,
+                                        contentDescription = "Downloads"
+                                    )
+                                }
+                            },
+                            label = { Text("Downloads", fontSize = 11.sp) },
+                            modifier = Modifier.testTag("nav_item_downloads")
+                        )
+
+                        // Files Tab
+                        NavigationBarItem(
+                            selected = currentTab == AppTab.FILES,
+                            onClick = { viewModel.selectTab(AppTab.FILES) },
+                            icon = {
+                                Icon(
+                                    imageVector = if (currentTab == AppTab.FILES) Icons.Filled.Folder else Icons.Outlined.Folder,
+                                    contentDescription = "Files"
+                                )
+                            },
+                            label = { Text("Files", fontSize = 11.sp) },
+                            modifier = Modifier.testTag("nav_item_files")
+                        )
+
+                        // Sites Hub Tab
+                        NavigationBarItem(
+                            selected = currentTab == AppTab.SITES,
+                            onClick = { viewModel.selectTab(AppTab.SITES) },
+                            icon = {
+                                Icon(
+                                    imageVector = if (currentTab == AppTab.SITES) Icons.Filled.Public else Icons.Outlined.Public,
+                                    contentDescription = "Sites Hub"
+                                )
+                            },
+                            label = { Text("Sites Hub", fontSize = 11.sp) },
+                            modifier = Modifier.testTag("nav_item_sites")
+                        )
+
+                        // Cloud Sync Tab
+                        NavigationBarItem(
+                            selected = currentTab == AppTab.SYNC,
+                            onClick = { viewModel.selectTab(AppTab.SYNC) },
+                            icon = {
+                                Icon(
+                                    imageVector = if (currentTab == AppTab.SYNC) Icons.Filled.CloudSync else Icons.Outlined.CloudSync,
+                                    contentDescription = "Sync"
+                                )
+                            },
+                            label = { Text("Sync", fontSize = 11.sp) },
+                            modifier = Modifier.testTag("nav_item_sync")
+                        )
+
+                        // Settings Tab
+                        NavigationBarItem(
+                            selected = currentTab == AppTab.SETTINGS,
+                            onClick = { viewModel.selectTab(AppTab.SETTINGS) },
+                            icon = {
+                                Icon(
+                                    imageVector = if (currentTab == AppTab.SETTINGS) Icons.Filled.Settings else Icons.Outlined.Settings,
+                                    contentDescription = "Settings"
+                                )
+                            },
+                            label = { Text("Settings", fontSize = 11.sp) },
+                            modifier = Modifier.testTag("nav_item_settings")
+                        )
+                    }
+                }
+            }
+        ) { innerPadding ->
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(innerPadding)
+            ) {
+                Crossfade(targetState = currentTab, label = "tab_crossfade") { tab ->
+                    when (tab) {
+                        AppTab.BROWSER -> {
+                            BrowserView(
+                                initialUrl = browserUrl,
+                                detectedMediaList = detectedMediaList,
+                                isDesktopMode = isDesktopMode,
+                                onUrlChanged = { url, title, progress ->
+                                    viewModel.updateBrowserInfo(url, title, progress)
+                                },
+                                onMediaDetected = { media ->
+                                    viewModel.addDetectedMedia(media)
+                                },
+                                onOpenMediaSniffer = {
+                                    viewModel.openMediaSniffer(true)
+                                },
+                                onQuickDirectDownload = { url, title ->
+                                    viewModel.downloadDirectUrl(url, title)
+                                },
+                                onToggleDesktopMode = {
+                                    viewModel.toggleDesktopMode()
+                                }
+                            )
+                        }
+
+                        AppTab.DOWNLOADS -> {
+                            DownloadsTab(
+                                activeDownloads = activeDownloads,
+                                completedDownloads = completedMedia,
+                                isBatteryRestricted = isBatteryRestricted,
+                                isBatteryAlertDismissed = isBatteryAlertDismissed,
+                                onOpenBatterySettings = { viewModel.openBatteryOptimizationSettings() },
+                                onDismissBatteryAlert = { viewModel.dismissBatteryAlert() },
+                                onPauseDownload = { viewModel.pauseDownload(it) },
+                                onResumeDownload = { viewModel.resumeDownload(it) },
+                                onCancelDownload = { viewModel.cancelDownload(it) },
+                                onPlayMedia = { viewModel.openMediaPlayer(it) },
+                                onRenameMedia = { viewModel.openRenameDialog(it) },
+                                onDeleteMedia = { viewModel.deleteMedia(it) },
+                                onSyncToCloud = { media, provider -> viewModel.syncMediaToCloud(media, provider) },
+                                onShareMedia = onShareMedia,
+                                onNavigateToBrowser = { viewModel.selectTab(AppTab.BROWSER) }
+                            )
+                        }
+
+                        AppTab.FILES -> {
+                            FileManagementTab(
+                                files = filteredFiles,
+                                searchQuery = searchQuery,
+                                selectedCategory = selectedCategoryFilter,
+                                sortOption = sortOption,
+                                layoutStyle = layoutStyle,
+                                onSearchChange = { viewModel.searchQuery.value = it },
+                                onCategoryChange = { viewModel.selectedCategoryFilter.value = it },
+                                onSortChange = { viewModel.sortOption.value = it },
+                                onLayoutChange = { viewModel.layoutStyle.value = it },
+                                onPlayMedia = { viewModel.openMediaPlayer(it) },
+                                onRenameClick = { viewModel.openRenameDialog(it) },
+                                onDeleteMedia = { viewModel.deleteMedia(it) },
+                                onSyncCloud = { viewModel.syncMediaToCloud(it, "Google Drive") },
+                                onShareMedia = onShareMedia
+                            )
+                        }
+
+                        AppTab.SITES -> {
+                            SitesHubTab(
+                                bookmarks = bookmarks,
+                                onSelectSite = { url ->
+                                    viewModel.loadUrlInBrowser(url)
+                                },
+                                onAddBookmark = { title, url, category, isAdult ->
+                                    viewModel.addBookmark(title, url, category, isAdult)
+                                },
+                                onDeleteBookmark = { id ->
+                                    viewModel.deleteBookmark(id)
+                                }
+                            )
+                        }
+
+                        AppTab.SYNC -> {
+                            CloudSyncTab(
+                                cloudSyncManager = viewModel.repository.cloudSyncManager,
+                                mediaList = completedMedia,
+                                onImportSuccess = { importedList ->
+                                    // Media list updated
+                                }
+                            )
+                        }
+
+                        AppTab.SETTINGS -> {
+                            SettingsTab(
+                                themeMode = themeMode,
+                                accentColor = accentColor,
+                                layoutStyle = layoutStyle,
+                                isPinEnabled = viewModel.isPinEnabled,
+                                isBiometricEnabled = viewModel.isBiometricEnabled,
+                                canUseBiometric = viewModel.canUseBiometric,
+                                hasPinSet = viewModel.hasPinSet,
+                                isBatteryRestricted = isBatteryRestricted,
+                                onOpenBatterySettings = { viewModel.openBatteryOptimizationSettings() },
+                                onThemeModeChange = { viewModel.themeMode.value = it },
+                                onAccentColorChange = { viewModel.accentColor.value = it },
+                                onLayoutStyleChange = { viewModel.layoutStyle.value = it },
+                                onSetPinEnabled = { viewModel.setPinEnabled(it) },
+                                onSetBiometricEnabled = { viewModel.setBiometricEnabled(it) },
+                                onUpdatePin = { viewModel.setPin(it) },
+                                onClearSecurity = { viewModel.clearSecurity() }
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        // Lock Screen overlay
+        AnimatedVisibility(
+            visible = isAppLocked,
+            enter = fadeIn(),
+            exit = fadeOut()
+        ) {
+            LockScreen(
+                onUnlockSuccess = { viewModel.unlockApp() },
+                onVerifyPin = { pin -> viewModel.verifyPin(pin) },
+                onSetPin = { newPin -> viewModel.setPin(newPin) },
+                hasPinSet = viewModel.hasPinSet,
+                isBiometricEnabled = viewModel.isBiometricEnabled,
+                canUseBiometric = viewModel.canUseBiometric,
+                onEmergencyReset = { viewModel.clearSecurity() }
+            )
+        }
+
+        // Media Sniffer Bottom Sheet
+        if (isMediaSnifferOpen) {
+            MediaSnifferBottomSheet(
+                mediaList = detectedMediaList,
+                onDismiss = { viewModel.openMediaSniffer(false) },
+                onDownload = { item -> viewModel.downloadMedia(item) },
+                onDownloadAll = {
+                    detectedMediaList.forEach { viewModel.downloadMedia(it) }
+                    viewModel.openMediaSniffer(false)
+                }
+            )
+        }
+
+        // In-App Media Player Modal
+        selectedMediaForPlayer?.let { media ->
+            MediaPlayerDialog(
+                media = media,
+                onDismiss = { viewModel.openMediaPlayer(null) }
+            )
+        }
+
+        // Rename dialog
+        renameTarget?.let { media ->
+            RenameFileDialog(
+                currentName = media.title,
+                onDismiss = { viewModel.openRenameDialog(null) },
+                onConfirm = { newTitle -> viewModel.renameMedia(media.id, newTitle) }
+            )
+        }
+    }
+}

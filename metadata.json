@@ -1,0 +1,6 @@
+{
+  "name": "MediaFetch",
+  "description": "Smart in-app browser and media sniffer for background downloading, PIN security lock, local file management, and cloud sync.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
