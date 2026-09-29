@@ -67,6 +67,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.data.model.DownloadedMedia
 import com.example.ui.viewmodel.AccentColor
 import com.example.ui.viewmodel.LayoutStyle
 import com.example.ui.viewmodel.ThemeMode
@@ -82,6 +83,8 @@ fun SettingsTab(
     canUseBiometric: Boolean,
     hasPinSet: Boolean,
     isBatteryRestricted: Boolean = false,
+    mediaList: List<DownloadedMedia> = emptyList(),
+    onNavigateToCategory: (String) -> Unit = {},
     onOpenBatterySettings: () -> Unit = {},
     onThemeModeChange: (ThemeMode) -> Unit,
     onAccentColorChange: (AccentColor) -> Unit,
@@ -134,96 +137,27 @@ fun SettingsTab(
             }
         }
 
-        // Theme & Appearance (Requirement 8, 14, 15)
+        // Recharts-based Visual Disk Space Dashboard
+        RechartsStorageDashboard(
+            mediaList = mediaList,
+            onCategorySelected = onNavigateToCategory
+        )
+
+        // Persistent Global Theme Settings Component
+        GlobalThemeSettingsCard(
+            currentThemeMode = themeMode,
+            currentAccentColor = accentColor,
+            onThemeModeChange = onThemeModeChange,
+            onAccentColorChange = onAccentColorChange
+        )
+
+        // Interface & Layout Preferences Card
         ElevatedCard(
             shape = RoundedCornerShape(16.dp),
             colors = CardDefaults.elevatedCardColors(containerColor = MaterialTheme.colorScheme.surface),
             modifier = Modifier.fillMaxWidth()
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        imageVector = Icons.Default.Brightness4,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = "Display & Theme Mode",
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 16.sp
-                    )
-                }
-
-                Spacer(modifier = Modifier.height(12.dp))
-
-                // Theme Mode Selector
-                val themes = listOf(
-                    ThemeMode.DARK to "Dark",
-                    ThemeMode.AMOLED to "AMOLED",
-                    ThemeMode.LIGHT to "Light",
-                    ThemeMode.SYSTEM to "System"
-                )
-
-                SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
-                    themes.forEachIndexed { index, (mode, label) ->
-                        SegmentedButton(
-                            selected = themeMode == mode,
-                            onClick = { onThemeModeChange(mode) },
-                            shape = SegmentedButtonDefaults.itemShape(index = index, count = themes.size),
-                            label = { Text(label, fontSize = 12.sp) }
-                        )
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(18.dp))
-
-                // Accent Color Selector (Requirement 15)
-                Text(
-                    text = "Accent Color:",
-                    style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-
-                Spacer(modifier = Modifier.height(8.dp))
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    AccentColor.values().forEach { colorOption ->
-                        val isSelected = accentColor == colorOption
-                        val color = Color(colorOption.hex)
-
-                        Box(
-                            modifier = Modifier
-                                .size(44.dp)
-                                .clip(CircleShape)
-                                .background(color)
-                                .border(
-                                    width = if (isSelected) 3.dp else 1.dp,
-                                    color = if (isSelected) Color.White else Color.Transparent,
-                                    shape = CircleShape
-                                )
-                                .clickable { onAccentColorChange(colorOption) }
-                                .testTag("color_picker_${colorOption.name}"),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            if (isSelected) {
-                                Icon(
-                                    imageVector = Icons.Default.Check,
-                                    contentDescription = "Selected",
-                                    tint = Color.White,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                            }
-                        }
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(16.dp))
-
                 // Default Layout Style (Requirement 15)
                 Row(
                     modifier = Modifier.fillMaxWidth(),

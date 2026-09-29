@@ -28,6 +28,16 @@
             android:foregroundServiceType="dataSync"
             tools:node="merge" />
 
+        <service
+            android:name=".data.media3.Media3DownloadService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync">
+            <intent-filter>
+                <action android:name="androidx.media3.exoplayer.downloadService.action.RESTART" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </service>
+
         <activity
             android:name=".MainActivity"
             android:exported="true"

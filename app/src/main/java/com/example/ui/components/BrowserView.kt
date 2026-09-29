@@ -8,7 +8,6 @@ import android.os.Handler
 import android.os.Looper
 import android.view.View
 import android.view.ViewGroup
-import java.io.File
 import android.webkit.JavascriptInterface
 import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebChromeClient
@@ -54,6 +53,7 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SmartDisplay
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ElevatedButton
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
@@ -68,6 +68,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -87,8 +88,13 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import android.widget.Toast
+import com.example.data.media3.MediaBrowserInterceptorService
 import com.example.data.model.DetectedMedia
 import com.example.data.model.MediaType
+import com.example.data.util.MediaSnifferEngine
+import com.example.data.worker.MediaDetectionHub
+import java.io.File
 import org.json.JSONArray
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -98,9 +104,12 @@ fun BrowserView(
     initialUrl: String,
     detectedMediaList: List<DetectedMedia>,
     isDesktopMode: Boolean,
+    isSniffingActive: Boolean = false,
+    deepScanTrigger: Long = 0L,
     onUrlChanged: (String, String, Int) -> Unit,
     onMediaDetected: (DetectedMedia) -> Unit,
     onOpenMediaSniffer: () -> Unit,
+    onRequestPageScan: () -> Unit = {},
     onQuickDirectDownload: (String, String) -> Unit,
     onToggleDesktopMode: () -> Unit
 ) {
@@ -112,12 +121,21 @@ fun BrowserView(
     var canGoBack by remember { mutableStateOf(false) }
     var canGoForward by remember { mutableStateOf(false) }
     var showDirectDownloadDialog by remember { mutableStateOf(false) }
+    val isWorkerScanning by MediaDetectionHub.isWorkerRunning.collectAsState()
 
     LaunchedEffect(initialUrl) {
         if (initialUrl != urlInput && initialUrl.isNotBlank()) {
             urlInput = initialUrl
             try {
                 webViewRef?.loadUrl(initialUrl)
+            } catch (_: Exception) {}
+        }
+    }
+
+    LaunchedEffect(deepScanTrigger) {
+        if (deepScanTrigger > 0L) {
+            try {
+                webViewRef?.evaluateJavascript(MediaSnifferEngine.generateSnifferScript(), null)
             } catch (_: Exception) {}
         }
     }
@@ -246,6 +264,39 @@ fun BrowserView(
                             modifier = Modifier.size(20.dp)
                         )
                     }
+
+                    // Dedicated Media Sniffer Action Button with Live Counter Badge
+                    IconButton(
+                        onClick = onOpenMediaSniffer,
+                        modifier = Modifier
+                            .size(36.dp)
+                            .testTag("browser_sniffer_action_btn")
+                    ) {
+                        BadgedBox(
+                            badge = {
+                                if (detectedMediaList.isNotEmpty()) {
+                                    Badge(
+                                        containerColor = MaterialTheme.colorScheme.primary,
+                                        contentColor = MaterialTheme.colorScheme.onPrimary
+                                    ) {
+                                        Text(
+                                            text = "${detectedMediaList.size}",
+                                            fontSize = 10.sp,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
+                                }
+                            }
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.SmartDisplay,
+                                contentDescription = "Media Sniffer",
+                                tint = if (detectedMediaList.isNotEmpty()) MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -262,15 +313,22 @@ fun BrowserView(
             )
         }
 
-        // Web Content & Floating Media Badge
+        // Web Content & Floating Actions
         Box(modifier = Modifier.weight(1f)) {
             AndroidView(
                 factory = { ctx ->
                     try {
-                        val webviewCache = File(ctx.cacheDir, "WebView/Default/HTTP Cache/Code Cache/js")
-                        if (!webviewCache.exists()) {
-                            webviewCache.mkdirs()
-                        }
+                        val codeCacheDir = File(ctx.cacheDir, "WebView/Default/HTTP Cache/Code Cache")
+                        val jsDir = File(codeCacheDir, "js")
+                        val wasmDir = File(codeCacheDir, "wasm")
+                        if (!wasmDir.exists()) wasmDir.mkdirs()
+                        if (!jsDir.exists()) jsDir.mkdirs()
+                        wasmDir.setReadable(true, false)
+                        wasmDir.setWritable(true, false)
+                        wasmDir.setExecutable(true, false)
+                        jsDir.setReadable(true, false)
+                        jsDir.setWritable(true, false)
+                        jsDir.setExecutable(true, false)
                     } catch (_: Exception) {}
 
                     WebView(ctx).apply {
@@ -292,33 +350,37 @@ fun BrowserView(
                             settings.userAgentString = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
                         }
 
-                        addJavascriptInterface(
-                            MediaJsBridge { url, type, title ->
-                                val ext = url.substringBefore('?').substringAfterLast('.', "mp4")
-                                val mediaType = when (type.lowercase()) {
-                                    "video" -> MediaType.VIDEO
-                                    "audio" -> MediaType.AUDIO
-                                    "image" -> MediaType.IMAGE
-                                    else -> MediaType.OTHER
-                                }
-                                onMediaDetected(
-                                    DetectedMedia(
-                                        url = url,
-                                        title = title.ifBlank { "Media_${System.currentTimeMillis()}" },
-                                        mimeType = if (type == "audio") "audio/mpeg" else "video/mp4",
-                                        extension = ext,
-                                        mediaType = mediaType
-                                    )
-                                )
-                            },
-                            "MediaBridge"
-                        )
+                        // Register Media Sniffer JavaScript Bridges
+                        val bridge = MediaJsBridge { media ->
+                            onMediaDetected(media)
+                        }
+                        addJavascriptInterface(bridge, "MediaSnifferBridge")
+                        addJavascriptInterface(bridge, "MediaBridge")
 
                         webChromeClient = object : WebChromeClient() {
                             override fun onProgressChanged(view: WebView?, newProgress: Int) {
                                 pageProgress = newProgress
                                 onUrlChanged(view?.url ?: "", view?.title ?: "", newProgress)
+                                if (newProgress > 60) {
+                                    view?.evaluateJavascript(MediaSnifferEngine.generateSnifferScript(), null)
+                                }
                             }
+                        }
+
+                        setDownloadListener { downloadUrl, userAgent, contentDisposition, mimetype, contentLength ->
+                            MediaBrowserInterceptorService.getInstance(ctx).processUrl(
+                                url = downloadUrl,
+                                pageTitle = title ?: "Download",
+                                mimeType = mimetype,
+                                forceQueue = true
+                            )
+                            MediaDetectionHub.scheduleLinkIntercept(
+                                context = ctx,
+                                linkUrl = downloadUrl,
+                                pageTitle = title ?: "Download",
+                                userAgent = userAgent
+                            )
+                            Toast.makeText(ctx, "Media3 interceptor queued background download...", Toast.LENGTH_SHORT).show()
                         }
 
                         webViewClient = object : WebViewClient() {
@@ -333,9 +395,42 @@ fun BrowserView(
                                 return true
                             }
 
+                            override fun shouldOverrideUrlLoading(
+                                view: WebView?,
+                                request: WebResourceRequest?
+                            ): Boolean {
+                                val reqUrl = request?.url?.toString() ?: return false
+                                if (isDirectDownloadOrMediaLink(reqUrl)) {
+                                    MediaBrowserInterceptorService.getInstance(ctx).processUrl(
+                                        url = reqUrl,
+                                        pageTitle = view?.title ?: "Download",
+                                        forceQueue = true
+                                    )
+                                    MediaDetectionHub.scheduleLinkIntercept(
+                                        context = ctx,
+                                        linkUrl = reqUrl,
+                                        pageTitle = view?.title ?: "Download",
+                                        userAgent = view?.settings?.userAgentString
+                                    )
+                                    Toast.makeText(ctx, "Media3 intercepting media stream...", Toast.LENGTH_SHORT).show()
+                                    return true
+                                }
+                                return super.shouldOverrideUrlLoading(view, request)
+                            }
+
                             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                                 super.onPageStarted(view, url, favicon)
-                                url?.let { urlInput = it }
+                                url?.let {
+                                    urlInput = it
+                                    if (!it.startsWith("data:") && !it.startsWith("blob:") && !it.startsWith("about:")) {
+                                        MediaDetectionHub.schedulePageScan(
+                                            context = ctx,
+                                            pageUrl = it,
+                                            pageTitle = view?.title ?: "",
+                                            userAgent = view?.settings?.userAgentString
+                                        )
+                                    }
+                                }
                                 canGoBack = view?.canGoBack() == true
                                 canGoForward = view?.canGoForward() == true
                             }
@@ -344,15 +439,48 @@ fun BrowserView(
                                 super.onPageFinished(view, url)
                                 canGoBack = view?.canGoBack() == true
                                 canGoForward = view?.canGoForward() == true
-                                injectMediaDetectionScript(view)
+                                // Inject media sniffer script into the newly finished page
+                                view?.evaluateJavascript(MediaSnifferEngine.generateSnifferScript(), null)
+                                url?.let {
+                                    if (!it.startsWith("data:") && !it.startsWith("blob:") && !it.startsWith("about:")) {
+                                        MediaDetectionHub.schedulePageScan(
+                                            context = ctx,
+                                            pageUrl = it,
+                                            pageTitle = view?.title ?: "",
+                                            userAgent = view?.settings?.userAgentString
+                                        )
+                                    }
+                                }
                             }
 
                             override fun shouldInterceptRequest(
                                 view: WebView?,
                                 request: WebResourceRequest?
                             ): WebResourceResponse? {
-                                request?.url?.let { reqUri ->
-                                    sniffMediaUrl(reqUri.toString(), onMediaDetected)
+                                request?.let { req ->
+                                    val reqUrl = req.url.toString()
+                                    // Process via MediaBrowserInterceptorService (detects video/audio & auto-queues to Media3)
+                                    val intercepted = MediaBrowserInterceptorService.getInstance(ctx).processUrl(
+                                        url = reqUrl,
+                                        headers = req.requestHeaders,
+                                        pageTitle = view?.title
+                                    )
+                                    if (intercepted != null) {
+                                        Handler(Looper.getMainLooper()).post {
+                                            onMediaDetected(intercepted)
+                                        }
+                                    } else {
+                                        val sniffed = MediaSnifferEngine.sniffUrl(
+                                            rawUrl = reqUrl,
+                                            pageTitle = view?.title,
+                                            requestHeaders = req.requestHeaders
+                                        )
+                                        sniffed?.let { media ->
+                                            Handler(Looper.getMainLooper()).post {
+                                                onMediaDetected(media)
+                                            }
+                                        }
+                                    }
                                 }
                                 return super.shouldInterceptRequest(view, request)
                             }
@@ -373,13 +501,13 @@ fun BrowserView(
                 modifier = Modifier.fillMaxSize()
             )
 
-            // Floating "Media Detected" Glow Pill
-            Box(
+            // Floating "Media Detected" Pill at bottom right
+            Column(
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
-                    .padding(end = 16.dp, bottom = 24.dp)
+                    .padding(end = 16.dp, bottom = 20.dp)
             ) {
-                androidx.compose.animation.AnimatedVisibility(
+                AnimatedVisibility(
                     visible = detectedMediaList.isNotEmpty(),
                     enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
                     exit = slideOutVertically(targetOffsetY = { it }) + fadeOut()
@@ -403,32 +531,85 @@ fun BrowserView(
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.primary
                         )
-                        Spacer(modifier = Modifier.width(4.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
                         Icon(
                             imageVector = Icons.Default.Download,
                             contentDescription = null,
-                            modifier = Modifier.size(16.dp)
+                            modifier = Modifier.size(16.dp),
+                            tint = MaterialTheme.colorScheme.primary
                         )
                     }
                 }
             }
 
-            // Quick Direct URL download button at bottom left
-            FilledTonalButton(
-                onClick = { showDirectDownloadDialog = true },
-                shape = CircleShape,
+            // Quick Actions at bottom left: "Scan Page" & "Direct URL"
+            Row(
                 modifier = Modifier
                     .align(Alignment.BottomStart)
-                    .padding(start = 16.dp, bottom = 24.dp)
-                    .testTag("quick_direct_download_button")
+                    .padding(start = 16.dp, bottom = 20.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Icon(
-                    imageVector = Icons.Default.Download,
-                    contentDescription = "Direct URL download",
-                    modifier = Modifier.size(18.dp)
-                )
-                Spacer(modifier = Modifier.width(6.dp))
-                Text("Direct URL", fontSize = 12.sp)
+                // Scan Page Now button
+                FilledTonalButton(
+                    onClick = {
+                        onRequestPageScan()
+                        try {
+                            webViewRef?.evaluateJavascript(MediaSnifferEngine.generateSnifferScript(), null)
+                        } catch (_: Exception) {}
+                    },
+                    shape = CircleShape,
+                    modifier = Modifier.testTag("quick_scan_page_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Refresh,
+                        contentDescription = "Scan Page",
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(5.dp))
+                    Text("Scan Page", fontSize = 12.sp)
+                }
+
+                // Direct URL download button
+                FilledTonalButton(
+                    onClick = { showDirectDownloadDialog = true },
+                    shape = CircleShape,
+                    modifier = Modifier.testTag("quick_direct_download_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Download,
+                        contentDescription = "Direct URL download",
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(5.dp))
+                    Text("Direct URL", fontSize = 12.sp)
+                }
+
+                if (isWorkerScanning) {
+                    Surface(
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.primaryContainer,
+                        modifier = Modifier.padding(start = 2.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(12.dp),
+                                strokeWidth = 2.dp,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            Text(
+                                text = "WorkManager Sniffing",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
+                }
             }
         }
     }
@@ -458,7 +639,7 @@ fun DirectDownloadDialog(
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text(
-                    text = "Enter direct link to video, audio or media file:",
+                    text = "Enter direct link to video, audio or media stream:",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -468,14 +649,14 @@ fun DirectDownloadDialog(
                     label = { Text("Media Stream URL") },
                     singleLine = true,
                     placeholder = { Text("https://example.com/video.mp4") },
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier.fillMaxWidth().testTag("direct_url_input")
                 )
                 OutlinedTextField(
                     value = titleText,
                     onValueChange = { titleText = it },
                     label = { Text("File Name / Title (optional)") },
                     singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier.fillMaxWidth().testTag("direct_title_input")
                 )
             }
         },
@@ -486,7 +667,8 @@ fun DirectDownloadDialog(
                         onConfirm(urlText.trim(), titleText.trim())
                     }
                 },
-                enabled = urlText.isNotBlank()
+                enabled = urlText.isNotBlank(),
+                modifier = Modifier.testTag("btn_direct_download_confirm")
             ) {
                 Text("Download Now")
             }
@@ -499,12 +681,27 @@ fun DirectDownloadDialog(
     )
 }
 
-private class MediaJsBridge(val callback: (String, String, String) -> Unit) {
+private class MediaJsBridge(val callback: (DetectedMedia) -> Unit) {
     private val mainHandler = Handler(Looper.getMainLooper())
 
     @JavascriptInterface
-    fun reportMedia(url: String, type: String, title: String) {
-        mainHandler.post { callback(url, type, title) }
+    fun reportMedia(url: String, type: String, title: String, quality: String = "HD") {
+        mainHandler.post {
+            val sniffed = MediaSnifferEngine.sniffUrl(url, title)
+            val media = sniffed ?: DetectedMedia(
+                url = url,
+                title = title.ifBlank { "Media_${System.currentTimeMillis() % 10000}" },
+                mimeType = if (type == "audio") "audio/mpeg" else "video/mp4",
+                extension = url.substringBefore('?').substringAfterLast('.', if (type == "audio") "mp3" else "mp4"),
+                mediaType = when (type.lowercase()) {
+                    "audio" -> MediaType.AUDIO
+                    "image" -> MediaType.IMAGE
+                    else -> MediaType.VIDEO
+                },
+                quality = quality
+            )
+            callback(media)
+        }
     }
 
     @JavascriptInterface
@@ -517,82 +714,12 @@ private class MediaJsBridge(val callback: (String, String, String) -> Unit) {
                     val src = obj.optString("src", "")
                     val type = obj.optString("type", "video")
                     val title = obj.optString("title", "Media Clip")
+                    val quality = obj.optString("quality", "HD")
                     if (src.isNotEmpty()) {
-                        callback(src, type, title)
+                        reportMedia(src, type, title, quality)
                     }
                 }
             } catch (_: Exception) {}
-        }
-    }
-}
-
-private fun injectMediaDetectionScript(webView: WebView?) {
-    val js = """
-        (function() {
-            try {
-                var found = [];
-                var title = document.title || 'Page Video';
-                
-                // Check HTML5 video elements
-                var videos = document.getElementsByTagName('video');
-                for (var i = 0; i < videos.length; i++) {
-                    var v = videos[i];
-                    var src = v.currentSrc || v.src;
-                    if (src && src.startsWith('http')) {
-                        found.push({src: src, type: 'video', title: title + ' ' + (i+1)});
-                    }
-                    var sources = v.getElementsByTagName('source');
-                    for (var j = 0; j < sources.length; j++) {
-                        var s = sources[j].src;
-                        if (s && s.startsWith('http')) {
-                            found.push({src: s, type: 'video', title: title + ' Source ' + (j+1)});
-                        }
-                    }
-                }
-                
-                // Check HTML5 audio elements
-                var audios = document.getElementsByTagName('audio');
-                for (var i = 0; i < audios.length; i++) {
-                    var a = audios[i];
-                    var src = a.currentSrc || a.src;
-                    if (src && src.startsWith('http')) {
-                        found.push({src: src, type: 'audio', title: title + ' Audio ' + (i+1)});
-                    }
-                }
-                
-                if (found.length > 0 && window.MediaBridge) {
-                    window.MediaBridge.reportMediaBatch(JSON.stringify(found));
-                }
-            } catch (e) {}
-        })();
-    """.trimIndent()
-    webView?.evaluateJavascript(js, null)
-}
-
-private fun sniffMediaUrl(url: String, onMediaDetected: (DetectedMedia) -> Unit) {
-    if (url.startsWith("data:") || url.startsWith("blob:") || url.length > 1000) return
-    val clean = url.substringBefore('?').substringBefore('#').lowercase()
-    val isVideo = clean.endsWith(".mp4") || clean.endsWith(".webm") || clean.endsWith(".m3u8") ||
-            clean.endsWith(".mkv") || clean.endsWith(".mov") || clean.endsWith(".ts")
-    val isAudio = clean.endsWith(".mp3") || clean.endsWith(".m4a") || clean.endsWith(".aac") ||
-            clean.endsWith(".wav") || clean.endsWith(".flac") || clean.endsWith(".ogg")
-
-    if (isVideo || isAudio) {
-        val ext = clean.substringAfterLast('.', if (isAudio) "mp3" else "mp4")
-        val fileName = clean.substringAfterLast('/').substringBeforeLast('.')
-        val title = fileName.replace(Regex("[^a-zA-Z0-9_-]"), " ").capitalizeWords().ifBlank {
-            if (isVideo) "Detected Video Stream" else "Detected Audio Track"
-        }
-        Handler(Looper.getMainLooper()).post {
-            onMediaDetected(
-                DetectedMedia(
-                    url = url,
-                    title = title,
-                    mimeType = if (isAudio) "audio/$ext" else "video/$ext",
-                    extension = ext,
-                    mediaType = if (isAudio) MediaType.AUDIO else MediaType.VIDEO
-                )
-            )
         }
     }
 }
@@ -604,5 +731,13 @@ private fun formatUrl(input: String): String {
     return "https://duckduckgo.com/?q=${trimmed.replace(" ", "+")}"
 }
 
-private fun String.capitalizeWords(): String =
-    split(" ").joinToString(" ") { it.replaceFirstChar { char -> char.uppercase() } }
+private fun isDirectDownloadOrMediaLink(url: String): Boolean {
+    val clean = url.lowercase(java.util.Locale.ROOT).substringBefore('?').substringBefore('#')
+    val ext = clean.substringAfterLast('.', "")
+    val downloadExtensions = setOf(
+        "mp4", "webm", "mkv", "mov", "m4v", "m3u8", "mpd", "ts", "3gp",
+        "mp3", "m4a", "aac", "wav", "flac", "ogg", "opus",
+        "zip", "rar", "7z", "apk", "pdf", "tar", "gz"
+    )
+    return downloadExtensions.contains(ext)
+}

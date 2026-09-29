@@ -69,7 +69,8 @@ class DownloadServiceManager(
             downloadManagerId = -1L,
             category = category,
             createdAt = System.currentTimeMillis(),
-            downloadSpeedText = "Queued..."
+            downloadSpeedText = "Queued...",
+            etaText = "Waiting in queue..."
         )
         val mediaId = mediaDao.insert(mediaItem)
 
@@ -128,7 +129,7 @@ class DownloadServiceManager(
                 "$sanitizedTitle.$extension"
             }
 
-            mediaDao.updateProgress(item.id, item.downloadProgress, "DOWNLOADING", "Resuming...")
+            mediaDao.updateProgressWithEta(item.id, item.downloadProgress, "DOWNLOADING", "Resuming...", "Connecting...")
             enqueueDownloadWorker(item.id, item.sourceUrl, fileName, sanitizedTitle)
         }
     }

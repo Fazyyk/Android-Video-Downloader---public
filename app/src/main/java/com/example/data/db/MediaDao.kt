@@ -25,11 +25,17 @@ interface MediaDao {
     @Query("SELECT * FROM downloaded_media WHERE downloadManagerId = :dmId")
     suspend fun getMediaByDownloadManagerId(dmId: Long): DownloadedMedia?
 
+    @Query("SELECT * FROM downloaded_media WHERE sourceUrl = :sourceUrl LIMIT 1")
+    suspend fun getMediaBySourceUrl(sourceUrl: String): DownloadedMedia?
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(media: DownloadedMedia): Long
 
     @Update
     suspend fun update(media: DownloadedMedia)
+
+    @Query("UPDATE downloaded_media SET downloadProgress = :progress, status = :status, downloadSpeedText = :speed, etaText = :eta WHERE id = :id")
+    suspend fun updateProgressWithEta(id: Long, progress: Int, status: String, speed: String, eta: String)
 
     @Query("UPDATE downloaded_media SET downloadProgress = :progress, status = :status, downloadSpeedText = :speed WHERE id = :id")
     suspend fun updateProgress(id: Long, progress: Int, status: String, speed: String)

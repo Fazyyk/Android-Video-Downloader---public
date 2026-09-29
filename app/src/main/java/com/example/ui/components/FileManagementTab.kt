@@ -29,12 +29,14 @@ import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.CloudDone
 import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Movie
+import androidx.compose.material.icons.filled.OfflinePin
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Share
@@ -67,6 +69,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -153,7 +156,7 @@ fun FileManagementTab(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         contentPadding = PaddingValues(end = 8.dp)
                     ) {
-                        val categories = listOf("ALL", "VIDEO", "AUDIO", "IMAGE")
+                        val categories = listOf("ALL", "VIDEO", "AUDIO", "IMAGE", "DOCUMENT", "OFFLINE_READY", "FIRESTORE_VERIFIED")
                         items(categories) { cat ->
                             val isSelected = selectedCategory.equals(cat, ignoreCase = true)
                             FilterChip(
@@ -163,18 +166,58 @@ fun FileManagementTab(
                                     Text(
                                         text = when (cat) {
                                             "ALL" -> "All"
-                                            "VIDEO" -> "Videos"
+                                            "VIDEO" -> "Video"
                                             "AUDIO" -> "Audio"
-                                            "IMAGE" -> "Images"
+                                            "IMAGE" -> "Image"
+                                            "DOCUMENT" -> "Document"
+                                            "OFFLINE_READY" -> "Offline"
+                                            "FIRESTORE_VERIFIED" -> "Firestore"
                                             else -> cat
                                         }
                                     )
+                                },
+                                leadingIcon = {
+                                    when (cat) {
+                                        "VIDEO" -> Icon(
+                                            Icons.Default.Movie,
+                                            contentDescription = "Video",
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                        "AUDIO" -> Icon(
+                                            Icons.Default.Audiotrack,
+                                            contentDescription = "Audio",
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                        "IMAGE" -> Icon(
+                                            Icons.Default.Image,
+                                            contentDescription = "Image",
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                        "DOCUMENT" -> Icon(
+                                            Icons.Default.Description,
+                                            contentDescription = "Document",
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                        "OFFLINE_READY" -> Icon(
+                                            Icons.Default.OfflinePin,
+                                            contentDescription = "Offline Ready",
+                                            tint = if (isSelected) MaterialTheme.colorScheme.onPrimary else Color(0xFF059669),
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                        "FIRESTORE_VERIFIED" -> Icon(
+                                            Icons.Default.CloudDone,
+                                            contentDescription = "Firestore Verified",
+                                            tint = if (isSelected) MaterialTheme.colorScheme.onPrimary else Color(0xFFEA580C),
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                        else -> null
+                                    }
                                 },
                                 colors = FilterChipDefaults.filterChipColors(
                                     selectedContainerColor = MaterialTheme.colorScheme.primary,
                                     selectedLabelColor = MaterialTheme.colorScheme.onPrimary
                                 ),
-                                modifier = Modifier.testTag("filter_chip_$cat")
+                                modifier = Modifier.testTag("filter_chip_${cat.lowercase()}")
                             )
                         }
                     }
@@ -229,9 +272,12 @@ fun FileManagementTab(
 
         // Summary Bar (Offline Access & Storage)
         val totalBytes = files.sumOf { it.fileSizeBytes }
+        val offlineCount = files.count { it.status == "COMPLETED" || (it.fileSizeBytes > 0 && it.localUri.isNotBlank()) }
+        val firestoreCount = files.count { it.isSyncedToCloud && it.cloudProvider.contains("Firestore", ignoreCase = true) }
+
         Surface(
             color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-            modifier = Modifier.fillMaxWidth()
+            modifier = Modifier.fillMaxWidth().testTag("file_management_summary_bar")
         ) {
             Row(
                 modifier = Modifier
@@ -245,12 +291,63 @@ fun FileManagementTab(
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                Text(
-                    text = "Offline Access Enabled ✓",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.primary,
-                    fontWeight = FontWeight.SemiBold
-                )
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    if (offlineCount > 0) {
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = Color(0xFF059669).copy(alpha = 0.14f)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(3.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.OfflinePin,
+                                    contentDescription = "Offline ready files",
+                                    tint = Color(0xFF059669),
+                                    modifier = Modifier.size(12.dp)
+                                )
+                                Text(
+                                    text = "$offlineCount Offline",
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFF059669)
+                                )
+                            }
+                        }
+                    }
+
+                    if (firestoreCount > 0) {
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = Color(0xFFEA580C).copy(alpha = 0.14f)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(3.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.CloudDone,
+                                    contentDescription = "Firestore verified files",
+                                    tint = Color(0xFFEA580C),
+                                    modifier = Modifier.size(12.dp)
+                                )
+                                Text(
+                                    text = "$firestoreCount Firestore",
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFFEA580C)
+                                )
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -383,26 +480,11 @@ fun FileGridCard(
                     }
                 }
 
-                // Cloud badge
-                if (item.isSyncedToCloud) {
-                    Surface(
-                        shape = CircleShape,
-                        color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier
-                            .align(Alignment.TopEnd)
-                            .padding(8.dp)
-                            .size(20.dp)
-                    ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Icon(
-                                imageVector = Icons.Default.CloudDone,
-                                contentDescription = "Synced",
-                                tint = MaterialTheme.colorScheme.onPrimary,
-                                modifier = Modifier.size(12.dp)
-                            )
-                        }
-                    }
-                }
+                // Thumbnail Overlay Badge (Offline & Firestore sync)
+                OfflineFirestoreThumbnailBadge(
+                    item = item,
+                    modifier = Modifier.align(Alignment.TopEnd)
+                )
             }
 
             // Info Details
@@ -455,6 +537,14 @@ fun FileGridCard(
                                 }
                             )
                             DropdownMenuItem(
+                                text = { Text("Verify via Firestore") },
+                                leadingIcon = { Icon(Icons.Default.CloudDone, null, tint = Color(0xFFEA580C)) },
+                                onClick = {
+                                    menuOpen = false
+                                    onSync()
+                                }
+                            )
+                            DropdownMenuItem(
                                 text = { Text("Sync to Cloud") },
                                 leadingIcon = { Icon(Icons.Default.CloudUpload, null) },
                                 onClick = {
@@ -482,7 +572,9 @@ fun FileGridCard(
                     }
                 }
 
-                Spacer(modifier = Modifier.height(2.dp))
+                Spacer(modifier = Modifier.height(4.dp))
+                OfflineFirestoreStatusBadge(item = item, compact = true)
+                Spacer(modifier = Modifier.height(4.dp))
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),

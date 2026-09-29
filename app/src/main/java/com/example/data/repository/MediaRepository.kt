@@ -11,6 +11,7 @@ class MediaRepository(
     private val bookmarkDao: BookmarkDao,
     val downloadManager: DownloadServiceManager,
     val cloudSyncManager: CloudSyncManager,
+    val firestoreSyncManager: FirestoreSyncManager,
     val securityPrefs: SecurityPreferences
 ) {
     val allMedia: Flow<List<DownloadedMedia>> = mediaDao.getAllMedia()

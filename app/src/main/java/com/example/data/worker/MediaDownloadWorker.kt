@@ -22,6 +22,7 @@ import java.io.FileOutputStream
 import java.io.RandomAccessFile
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.Locale
 
 class MediaDownloadWorker(
     private val context: Context,
@@ -35,6 +36,7 @@ class MediaDownloadWorker(
         const val KEY_TITLE = "title"
         const val KEY_PROGRESS = "progress"
         const val KEY_SPEED = "speed"
+        const val KEY_ETA = "eta"
 
         const val CHANNEL_ID = "media_downloads_channel"
         const val NOTIFICATION_ID_BASE = 1000
@@ -73,7 +75,7 @@ class MediaDownloadWorker(
 
         var connection: HttpURLConnection? = null
         try {
-            mediaDao.updateProgress(mediaId, 0, "DOWNLOADING", "Connecting...")
+            mediaDao.updateProgressWithEta(mediaId, 0, "DOWNLOADING", "Connecting...", "Estimating ETA...")
 
             val url = URL(sourceUrl)
             connection = url.openConnection() as HttpURLConnection
@@ -121,7 +123,13 @@ class MediaDownloadWorker(
                         output.flush()
                         output.close()
                         input.close()
-                        mediaDao.updateProgress(mediaId, ((totalBytesDownloaded * 100) / totalExpectedBytes.coerceAtLeast(1L)).toInt().coerceIn(0, 99), "PAUSED", "Paused")
+                        mediaDao.updateProgressWithEta(
+                            mediaId,
+                            ((totalBytesDownloaded * 100) / totalExpectedBytes.coerceAtLeast(1L)).toInt().coerceIn(0, 99),
+                            "PAUSED",
+                            "Paused",
+                            "Paused"
+                        )
                         return@withContext Result.retry()
                     }
 
@@ -131,13 +139,9 @@ class MediaDownloadWorker(
 
                     val now = System.currentTimeMillis()
                     val diff = now - lastUpdateTime
-                    if (diff >= 600) {
-                        val speedKBps = (bytesSinceLastUpdate / 1024.0) / (diff / 1000.0)
-                        val speedText = if (speedKBps > 1024.0) {
-                            "%.1f MB/s".format(speedKBps / 1024.0)
-                        } else {
-                            "%.0f KB/s".format(speedKBps)
-                        }
+                    if (diff >= 500) {
+                        val speedBytesPerSec = if (diff > 0) (bytesSinceLastUpdate.toDouble() / (diff.toDouble() / 1000.0)) else 0.0
+                        val speedText = formatTransferSpeed(speedBytesPerSec)
 
                         val progress = if (totalExpectedBytes > 0) {
                             ((totalBytesDownloaded * 100) / totalExpectedBytes).toInt().coerceIn(0, 99)
@@ -145,13 +149,23 @@ class MediaDownloadWorker(
                             ((totalBytesDownloaded / (1024 * 1024)) * 5).toInt().coerceIn(1, 95)
                         }
 
-                        mediaDao.updateProgress(mediaId, progress, "DOWNLOADING", speedText)
-                        setProgress(workDataOf(KEY_PROGRESS to progress, KEY_SPEED to speedText))
+                        val remainingBytes = (totalExpectedBytes - totalBytesDownloaded).coerceAtLeast(0L)
+                        val etaText = if (speedBytesPerSec > 1024.0 && totalExpectedBytes > 0 && remainingBytes > 0) {
+                            val remainingSec = (remainingBytes / speedBytesPerSec).toLong()
+                            formatRemainingTime(remainingSec)
+                        } else if (totalExpectedBytes <= 0) {
+                            "Direct Stream"
+                        } else {
+                            "Calculating ETA..."
+                        }
+
+                        mediaDao.updateProgressWithEta(mediaId, progress, "DOWNLOADING", speedText, etaText)
+                        setProgress(workDataOf(KEY_PROGRESS to progress, KEY_SPEED to speedText, KEY_ETA to etaText))
 
                         try {
                             notificationManager.notify(
                                 notificationId,
-                                buildNotification(title, progress, "$speedText • $progress%")
+                                buildNotification(title, progress, "$speedText • $etaText • $progress%")
                             )
                         } catch (_: Throwable) {}
 
@@ -212,14 +226,24 @@ class MediaDownloadWorker(
 
             for (step in 1..4) {
                 if (isStopped) {
-                    mediaDao.updateStatus(mediaId, "PAUSED")
+                    mediaDao.updateProgressWithEta(mediaId, (step - 1) * 25, "PAUSED", "Paused", "Paused")
                     return
                 }
-                delay(300)
+                delay(350)
                 val progress = step * 25
-                val speed = "${(1.5 + step * 0.5).format(1)} MB/s"
-                mediaDao.updateProgress(mediaId, progress, "DOWNLOADING", speed)
-                setProgress(workDataOf(KEY_PROGRESS to progress, KEY_SPEED to speed))
+                val currentSpeedMB = 2.4 + (step % 2) * 0.6
+                val speed = "%.1f MB/s".format(Locale.US, currentSpeedMB)
+                val remainingSec = ((4 - step) * 2L)
+                val eta = if (remainingSec > 0) "${remainingSec}s remaining" else "< 1s remaining"
+                mediaDao.updateProgressWithEta(mediaId, progress, "DOWNLOADING", speed, eta)
+                setProgress(workDataOf(KEY_PROGRESS to progress, KEY_SPEED to speed, KEY_ETA to eta))
+
+                try {
+                    notificationManager.notify(
+                        notificationId,
+                        buildNotification(title, progress, "$speed • $eta • $progress%")
+                    )
+                } catch (_: Throwable) {}
             }
 
             val finalItem = mediaDao.getMediaById(mediaId)
@@ -230,13 +254,38 @@ class MediaDownloadWorker(
                         status = "COMPLETED",
                         fileSizeBytes = if (targetFile.length() > 0) targetFile.length() else 18_400_000L,
                         localUri = Uri.fromFile(targetFile).toString(),
-                        downloadSpeedText = "Completed"
+                        downloadSpeedText = "Completed",
+                        etaText = ""
                     )
                 )
             }
             showCompletionNotification(title, notificationId)
         } catch (_: Exception) {
             mediaDao.updateStatus(mediaId, "COMPLETED")
+        }
+    }
+
+    private fun formatTransferSpeed(bytesPerSec: Double): String {
+        val mbps = bytesPerSec / (1024.0 * 1024.0)
+        val kbps = bytesPerSec / 1024.0
+        return when {
+            mbps >= 1.0 -> "%.1f MB/s".format(Locale.US, mbps)
+            kbps >= 1.0 -> "%.0f KB/s".format(Locale.US, kbps)
+            else -> "%.0f B/s".format(Locale.US, bytesPerSec.coerceAtLeast(0.0))
+        }
+    }
+
+    private fun formatRemainingTime(totalSeconds: Long): String {
+        if (totalSeconds <= 0) return "< 1s remaining"
+        if (totalSeconds < 60) return "${totalSeconds}s remaining"
+        val minutes = totalSeconds / 60
+        val seconds = totalSeconds % 60
+        return if (minutes < 60) {
+            if (seconds > 0) "${minutes}m ${seconds}s left" else "${minutes}m left"
+        } else {
+            val hours = minutes / 60
+            val remMin = minutes % 60
+            "${hours}h ${remMin}m left"
         }
     }
 

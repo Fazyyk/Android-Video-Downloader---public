@@ -4,14 +4,18 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.db.AppDatabase
+import com.example.data.media3.MediaBrowserInterceptorService
 import com.example.data.model.DetectedMedia
 import com.example.data.model.DownloadedMedia
 import com.example.data.model.MediaType
 import com.example.data.model.WebBookmark
 import com.example.data.repository.CloudSyncManager
 import com.example.data.repository.DownloadServiceManager
+import com.example.data.repository.FirestoreSyncManager
 import com.example.data.repository.MediaRepository
 import com.example.data.repository.SecurityPreferences
+import com.example.data.repository.ThemePreferences
+import com.example.data.worker.MediaDetectionHub
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -58,15 +62,47 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val database = AppDatabase.getInstance(application)
     private val securityPrefs = SecurityPreferences(application)
+    private val themePreferences = ThemePreferences(application)
     private val downloadManager = DownloadServiceManager(application, database.mediaDao(), viewModelScope)
     private val cloudSyncManager = CloudSyncManager(application)
+    val firestoreSyncManager = FirestoreSyncManager(application, database.mediaDao())
     val repository = MediaRepository(
         database.mediaDao(),
         database.bookmarkDao(),
         downloadManager,
         cloudSyncManager,
+        firestoreSyncManager,
         securityPrefs
     )
+
+    // Media3 Background Download Service & Interceptor
+    val mediaBrowserService = MediaBrowserInterceptorService.getInstance(application, database.mediaDao())
+    val media3Queue: StateFlow<List<com.example.data.media3.Media3QueueItem>> = mediaBrowserService.media3Queue
+    val isAutoQueueMedia3: StateFlow<Boolean> = mediaBrowserService.isAutoQueueEnabled
+
+    fun enqueueMedia3Download(url: String, title: String, mimeType: String? = null, category: String = "VIDEO"): String {
+        return mediaBrowserService.queueUrlForDownload(url, title, mimeType, category)
+    }
+
+    fun enqueueMedia3Media(detected: DetectedMedia): String {
+        return mediaBrowserService.queueMediaForDownload(detected)
+    }
+
+    fun setAutoQueueMedia3(enabled: Boolean) {
+        mediaBrowserService.setAutoQueue(enabled)
+    }
+
+    fun pauseMedia3Download(id: String) {
+        mediaBrowserService.pauseQueueItem(id)
+    }
+
+    fun resumeMedia3Download(id: String) {
+        mediaBrowserService.resumeQueueItem(id)
+    }
+
+    fun removeMedia3Download(id: String) {
+        mediaBrowserService.removeQueueItem(id)
+    }
 
     // Navigation & Tabs
     private val _currentTab = MutableStateFlow(AppTab.SITES)
@@ -91,6 +127,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _isMediaSnifferOpen = MutableStateFlow(false)
     val isMediaSnifferOpen: StateFlow<Boolean> = _isMediaSnifferOpen.asStateFlow()
+
+    private val _isSniffingActive = MutableStateFlow(false)
+    val isSniffingActive: StateFlow<Boolean> = _isSniffingActive.asStateFlow()
+
+    private val _deepScanTrigger = MutableStateFlow(0L)
+    val deepScanTrigger: StateFlow<Long> = _deepScanTrigger.asStateFlow()
+
+    private val _previewDetectedMedia = MutableStateFlow<DetectedMedia?>(null)
+    val previewDetectedMedia: StateFlow<DetectedMedia?> = _previewDetectedMedia.asStateFlow()
 
     // Downloads & Files Data
     val allMedia: StateFlow<List<DownloadedMedia>> = repository.allMedia.stateIn(
@@ -130,8 +175,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _isBatteryAlertDismissed = MutableStateFlow(false)
     val isBatteryAlertDismissed: StateFlow<Boolean> = _isBatteryAlertDismissed.asStateFlow()
 
+    val isWorkManagerScanning: StateFlow<Boolean> = MediaDetectionHub.isWorkerRunning
+    val totalInterceptedCount: StateFlow<Int> = MediaDetectionHub.totalInterceptedCount
+
     init {
         checkBatteryOptimizationStatus()
+        // Collect background WorkManager intercepted media links in real time
+        viewModelScope.launch {
+            MediaDetectionHub.detectedMediaFlow.collect { detected ->
+                addDetectedMedia(detected)
+            }
+        }
     }
 
     // Filtered and Sorted Files
@@ -151,7 +205,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         if (category != "ALL") {
-            result = result.filter { it.category.equals(category, ignoreCase = true) }
+            result = when (category.uppercase()) {
+                "FIRESTORE_VERIFIED", "FIRESTORE" -> result.filter {
+                    it.isSyncedToCloud && it.cloudProvider.contains("Firestore", ignoreCase = true)
+                }
+                "OFFLINE_READY", "OFFLINE" -> result.filter {
+                    it.status == "COMPLETED" || it.localUri.isNotBlank()
+                }
+                "DOCUMENT", "DOCUMENTS" -> result.filter {
+                    it.category.equals("DOCUMENT", ignoreCase = true) || it.category.equals("OTHER", ignoreCase = true)
+                }
+                else -> result.filter { it.category.equals(category, ignoreCase = true) }
+            }
         }
 
         when (sort) {
@@ -183,14 +248,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val canUseBiometric: Boolean get() = securityPrefs.canUseBiometric()
     val hasPinSet: Boolean get() = securityPrefs.hasPinSet()
 
-    // Theme Customization
-    val themeMode = MutableStateFlow(ThemeMode.DARK)
-    val accentColor = MutableStateFlow(AccentColor.CYAN)
+    // Theme Customization (Persistent Global Theme)
+    val themeMode: StateFlow<ThemeMode> = themePreferences.themeMode
+    val accentColor: StateFlow<AccentColor> = themePreferences.accentColor
+
+    fun setThemeMode(mode: ThemeMode) {
+        themePreferences.setThemeMode(mode)
+    }
+
+    fun setAccentColor(accent: AccentColor) {
+        themePreferences.setAccentColor(accent)
+    }
 
     init {
         viewModelScope.launch {
             repository.initDefaultBookmarksIfEmpty()
             insertSampleMediaIfEmpty()
+        }
+        viewModelScope.launch {
+            mediaBrowserService.detectedMediaFlow.collect { detected ->
+                addDetectedMedia(detected)
+            }
         }
     }
 
@@ -209,7 +287,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         status = "COMPLETED",
                         category = "VIDEO",
                         isSyncedToCloud = true,
-                        cloudProvider = "Google Drive"
+                        cloudProvider = "Firestore"
                     ),
                     DownloadedMedia(
                         title = "Cosmic_Ambient_Synthesizer_Track",
@@ -270,9 +348,43 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun addDetectedMedia(media: DetectedMedia) {
         val current = _detectedMediaList.value
-        if (current.none { it.url == media.url }) {
-            _detectedMediaList.value = listOf(media) + current.take(30)
+        // Clean URL matching (ignore query token variations for deduplication if identical path)
+        val normalizedIncoming = media.url.substringBefore('#')
+        if (current.none { it.url.substringBefore('#') == normalizedIncoming }) {
+            // Put videos & audios before generic images
+            val newList = (listOf(media) + current).take(50).sortedWith(
+                compareBy(
+                    { when (it.mediaType) {
+                        MediaType.VIDEO -> 0
+                        MediaType.AUDIO -> 1
+                        MediaType.IMAGE -> 2
+                        MediaType.OTHER -> 3
+                    } },
+                    { -it.detectedAt }
+                )
+            )
+            _detectedMediaList.value = newList
         }
+    }
+
+    fun requestPageScan() {
+        _isSniffingActive.value = true
+        _deepScanTrigger.value = System.currentTimeMillis()
+        MediaDetectionHub.schedulePageScan(
+            context = getApplication(),
+            pageUrl = _browserUrl.value,
+            pageTitle = _browserTitle.value,
+            userAgent = if (_isDesktopMode.value) "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36" else null,
+            forceImmediate = true
+        )
+    }
+
+    fun setSniffingActive(active: Boolean) {
+        _isSniffingActive.value = active
+    }
+
+    fun setPreviewMedia(media: DetectedMedia?) {
+        _previewDetectedMedia.value = media
     }
 
     fun clearDetectedMedia() {
@@ -281,6 +393,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun openMediaSniffer(open: Boolean) {
         _isMediaSnifferOpen.value = open
+    }
+
+    fun downloadAllDetectedMedia() {
+        val list = _detectedMediaList.value
+        list.forEach { item ->
+            downloadMedia(item)
+        }
+        _isMediaSnifferOpen.value = false
+        _currentTab.value = AppTab.DOWNLOADS
     }
 
     fun downloadMedia(item: DetectedMedia) {
@@ -346,6 +467,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun syncMediaToCloud(media: DownloadedMedia, provider: String) {
         viewModelScope.launch {
             repository.syncMediaToCloud(media.id, provider)
+        }
+    }
+
+    fun syncMediaToFirestore(media: DownloadedMedia) {
+        viewModelScope.launch {
+            firestoreSyncManager.pushSingleMediaToFirestore(media)
         }
     }
 

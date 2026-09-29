@@ -20,5 +20,6 @@ data class DownloadedMedia(
     val isSyncedToCloud: Boolean = false,
     val cloudProvider: String = "", // "Google Drive", "Dropbox", etc.
     val downloadSpeedText: String = "",
+    val etaText: String = "",
     val durationSeconds: Long = 0L
 )

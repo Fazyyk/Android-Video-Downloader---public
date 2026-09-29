@@ -54,6 +54,7 @@ import com.example.ui.components.DownloadsTab
 import com.example.ui.components.FileManagementTab
 import com.example.ui.components.LockScreen
 import com.example.ui.components.MediaPlayerDialog
+import com.example.ui.components.MediaPreviewDialog
 import com.example.ui.components.MediaSnifferBottomSheet
 import com.example.ui.components.RenameFileDialog
 import com.example.ui.components.SettingsTab
@@ -156,6 +157,11 @@ fun MainAppScreen(
     val accentColor by viewModel.accentColor.collectAsState()
     val isBatteryRestricted by viewModel.isBatteryRestricted.collectAsState()
     val isBatteryAlertDismissed by viewModel.isBatteryAlertDismissed.collectAsState()
+    val isSniffingActive by viewModel.isSniffingActive.collectAsState()
+    val deepScanTrigger by viewModel.deepScanTrigger.collectAsState()
+    val previewDetectedMedia by viewModel.previewDetectedMedia.collectAsState()
+    val media3Queue by viewModel.media3Queue.collectAsState()
+    val isAutoQueueMedia3 by viewModel.isAutoQueueMedia3.collectAsState()
 
     Box(modifier = Modifier.fillMaxSize()) {
         Scaffold(
@@ -281,6 +287,8 @@ fun MainAppScreen(
                                 initialUrl = browserUrl,
                                 detectedMediaList = detectedMediaList,
                                 isDesktopMode = isDesktopMode,
+                                isSniffingActive = isSniffingActive,
+                                deepScanTrigger = deepScanTrigger,
                                 onUrlChanged = { url, title, progress ->
                                     viewModel.updateBrowserInfo(url, title, progress)
                                 },
@@ -289,6 +297,9 @@ fun MainAppScreen(
                                 },
                                 onOpenMediaSniffer = {
                                     viewModel.openMediaSniffer(true)
+                                },
+                                onRequestPageScan = {
+                                    viewModel.requestPageScan()
                                 },
                                 onQuickDirectDownload = { url, title ->
                                     viewModel.downloadDirectUrl(url, title)
@@ -305,6 +316,12 @@ fun MainAppScreen(
                                 completedDownloads = completedMedia,
                                 isBatteryRestricted = isBatteryRestricted,
                                 isBatteryAlertDismissed = isBatteryAlertDismissed,
+                                media3Queue = media3Queue,
+                                isAutoQueueMedia3 = isAutoQueueMedia3,
+                                onToggleAutoQueueMedia3 = { viewModel.setAutoQueueMedia3(it) },
+                                onPauseMedia3Download = { viewModel.pauseMedia3Download(it) },
+                                onResumeMedia3Download = { viewModel.resumeMedia3Download(it) },
+                                onRemoveMedia3Download = { viewModel.removeMedia3Download(it) },
                                 onOpenBatterySettings = { viewModel.openBatteryOptimizationSettings() },
                                 onDismissBatteryAlert = { viewModel.dismissBatteryAlert() },
                                 onPauseDownload = { viewModel.pauseDownload(it) },
@@ -313,7 +330,10 @@ fun MainAppScreen(
                                 onPlayMedia = { viewModel.openMediaPlayer(it) },
                                 onRenameMedia = { viewModel.openRenameDialog(it) },
                                 onDeleteMedia = { viewModel.deleteMedia(it) },
-                                onSyncToCloud = { media, provider -> viewModel.syncMediaToCloud(media, provider) },
+                                onSyncToCloud = { media, provider ->
+                                    if (provider == "Firestore") viewModel.syncMediaToFirestore(media)
+                                    else viewModel.syncMediaToCloud(media, provider)
+                                },
                                 onShareMedia = onShareMedia,
                                 onNavigateToBrowser = { viewModel.selectTab(AppTab.BROWSER) }
                             )
@@ -333,7 +353,7 @@ fun MainAppScreen(
                                 onPlayMedia = { viewModel.openMediaPlayer(it) },
                                 onRenameClick = { viewModel.openRenameDialog(it) },
                                 onDeleteMedia = { viewModel.deleteMedia(it) },
-                                onSyncCloud = { viewModel.syncMediaToCloud(it, "Google Drive") },
+                                onSyncCloud = { viewModel.syncMediaToFirestore(it) },
                                 onShareMedia = onShareMedia
                             )
                         }
@@ -356,6 +376,7 @@ fun MainAppScreen(
                         AppTab.SYNC -> {
                             CloudSyncTab(
                                 cloudSyncManager = viewModel.repository.cloudSyncManager,
+                                firestoreSyncManager = viewModel.repository.firestoreSyncManager,
                                 mediaList = completedMedia,
                                 onImportSuccess = { importedList ->
                                     // Media list updated
@@ -373,9 +394,14 @@ fun MainAppScreen(
                                 canUseBiometric = viewModel.canUseBiometric,
                                 hasPinSet = viewModel.hasPinSet,
                                 isBatteryRestricted = isBatteryRestricted,
+                                mediaList = completedMedia,
+                                onNavigateToCategory = { category ->
+                                    viewModel.selectedCategoryFilter.value = category
+                                    viewModel.selectTab(AppTab.FILES)
+                                },
                                 onOpenBatterySettings = { viewModel.openBatteryOptimizationSettings() },
-                                onThemeModeChange = { viewModel.themeMode.value = it },
-                                onAccentColorChange = { viewModel.accentColor.value = it },
+                                onThemeModeChange = { viewModel.setThemeMode(it) },
+                                onAccentColorChange = { viewModel.setAccentColor(it) },
                                 onLayoutStyleChange = { viewModel.layoutStyle.value = it },
                                 onSetPinEnabled = { viewModel.setPinEnabled(it) },
                                 onSetBiometricEnabled = { viewModel.setBiometricEnabled(it) },
@@ -409,16 +435,30 @@ fun MainAppScreen(
         if (isMediaSnifferOpen) {
             MediaSnifferBottomSheet(
                 mediaList = detectedMediaList,
+                isScanning = isSniffingActive,
                 onDismiss = { viewModel.openMediaSniffer(false) },
                 onDownload = { item -> viewModel.downloadMedia(item) },
-                onDownloadAll = {
-                    detectedMediaList.forEach { viewModel.downloadMedia(it) }
-                    viewModel.openMediaSniffer(false)
+                onDownloadAll = { viewModel.downloadAllDetectedMedia() },
+                onQueueMedia3 = { item -> viewModel.enqueueMedia3Media(item) },
+                onPreview = { item -> viewModel.setPreviewMedia(item) },
+                onRescanPage = { viewModel.requestPageScan() },
+                onClearMedia = { viewModel.clearDetectedMedia() }
+            )
+        }
+
+        // Detected Media Preview Modal
+        previewDetectedMedia?.let { media ->
+            MediaPreviewDialog(
+                media = media,
+                onDismiss = { viewModel.setPreviewMedia(null) },
+                onDownload = {
+                    viewModel.downloadMedia(media)
+                    viewModel.setPreviewMedia(null)
                 }
             )
         }
 
-        // In-App Media Player Modal
+        // In-App Media Player Modal (for downloaded files)
         selectedMediaForPlayer?.let { media ->
             MediaPlayerDialog(
                 media = media,
