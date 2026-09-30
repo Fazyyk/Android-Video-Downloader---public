@@ -1,5 +1,10 @@
 package com.example.ui.components
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -30,6 +35,7 @@ import androidx.compose.material.icons.filled.CloudDone
 import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.DriveFileMove
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.GridView
@@ -37,6 +43,7 @@ import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.OfflinePin
+import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Share
@@ -96,17 +103,24 @@ fun FileManagementTab(
     onLayoutChange: (LayoutStyle) -> Unit,
     onPlayMedia: (DownloadedMedia) -> Unit,
     onRenameClick: (DownloadedMedia) -> Unit,
+    onMoveClick: (DownloadedMedia) -> Unit = {},
     onDeleteMedia: (Long) -> Unit,
     onSyncCloud: (DownloadedMedia) -> Unit,
-    onShareMedia: (DownloadedMedia) -> Unit
+    onShareMedia: (DownloadedMedia) -> Unit,
+    miniPlayerMedia: DownloadedMedia? = null,
+    onMiniPlayerClose: () -> Unit = {},
+    onOpenFullscreenPlayer: (DownloadedMedia) -> Unit = onPlayMedia
 ) {
     var showSortMenu by remember { mutableStateOf(false) }
 
-    Column(
+    Box(
         modifier = Modifier
             .fillMaxSize()
             .testTag("file_management_tab")
     ) {
+        Column(
+            modifier = Modifier.fillMaxSize()
+        ) {
         // Search & Controls Bar
         Surface(
             tonalElevation = 2.dp,
@@ -352,6 +366,8 @@ fun FileManagementTab(
         }
 
         // Files Grid / List View
+        val bottomContentPadding = if (miniPlayerMedia != null) 96.dp else 12.dp
+
         if (files.isEmpty()) {
             Box(
                 modifier = Modifier
@@ -379,9 +395,8 @@ fun FileManagementTab(
             if (layoutStyle == LayoutStyle.GRID) {
                 LazyVerticalGrid(
                     columns = GridCells.Fixed(2),
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(12.dp),
+                    contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 12.dp, bottom = bottomContentPadding),
+                    modifier = Modifier.fillMaxSize(),
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
@@ -389,7 +404,9 @@ fun FileManagementTab(
                         FileGridCard(
                             item = item,
                             onPlay = { onPlayMedia(item) },
+                            onPlayFullscreen = { onOpenFullscreenPlayer(item) },
                             onRename = { onRenameClick(item) },
+                            onMove = { onMoveClick(item) },
                             onDelete = { onDeleteMedia(item.id) },
                             onSync = { onSyncCloud(item) },
                             onShare = { onShareMedia(item) }
@@ -398,9 +415,8 @@ fun FileManagementTab(
                 }
             } else {
                 LazyColumn(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(horizontal = 16.dp, vertical = 10.dp),
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 10.dp, bottom = bottomContentPadding),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     items(files, key = { it.id }) { item ->
@@ -408,6 +424,7 @@ fun FileManagementTab(
                             item = item,
                             onPlay = { onPlayMedia(item) },
                             onRename = { onRenameClick(item) },
+                            onMove = { onMoveClick(item) },
                             onDelete = { onDeleteMedia(item.id) },
                             onSyncCloud = { onSyncCloud(item) },
                             onShare = { onShareMedia(item) }
@@ -417,6 +434,25 @@ fun FileManagementTab(
             }
         }
     }
+
+    // Media3 Mini-Player Component embedded in local File Management View
+    AnimatedVisibility(
+        visible = miniPlayerMedia != null,
+        enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
+        exit = slideOutVertically(targetOffsetY = { it }) + fadeOut(),
+        modifier = Modifier
+            .align(Alignment.BottomCenter)
+            .padding(start = 10.dp, end = 10.dp, bottom = 10.dp)
+    ) {
+        miniPlayerMedia?.let { media ->
+            Media3MiniPlayer(
+                media = media,
+                onClose = onMiniPlayerClose,
+                onOpenFullscreen = onOpenFullscreenPlayer
+            )
+        }
+    }
+}
 }
 
 @Composable
@@ -426,7 +462,9 @@ fun FileGridCard(
     onRename: () -> Unit,
     onDelete: () -> Unit,
     onSync: () -> Unit,
-    onShare: () -> Unit
+    onShare: () -> Unit,
+    onMove: () -> Unit = {},
+    onPlayFullscreen: (() -> Unit)? = null
 ) {
     var menuOpen by remember { mutableStateOf(false) }
 
@@ -521,19 +559,37 @@ fun FileGridCard(
                             onDismissRequest = { menuOpen = false }
                         ) {
                             DropdownMenuItem(
-                                text = { Text("Play") },
+                                text = { Text("Preview in Mini Player") },
                                 leadingIcon = { Icon(Icons.Default.PlayArrow, null) },
                                 onClick = {
                                     menuOpen = false
                                     onPlay()
                                 }
                             )
+                            if (onPlayFullscreen != null) {
+                                DropdownMenuItem(
+                                    text = { Text("Open in Full Player") },
+                                    leadingIcon = { Icon(Icons.Default.OpenInNew, null) },
+                                    onClick = {
+                                        menuOpen = false
+                                        onPlayFullscreen()
+                                    }
+                                )
+                            }
                             DropdownMenuItem(
                                 text = { Text("Rename") },
                                 leadingIcon = { Icon(Icons.Default.Edit, null) },
                                 onClick = {
                                     menuOpen = false
                                     onRename()
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Move to Folder") },
+                                leadingIcon = { Icon(Icons.Default.DriveFileMove, null) },
+                                onClick = {
+                                    menuOpen = false
+                                    onMove()
                                 }
                             )
                             DropdownMenuItem(

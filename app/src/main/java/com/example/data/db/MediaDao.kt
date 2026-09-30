@@ -46,6 +46,12 @@ interface MediaDao {
     @Query("UPDATE downloaded_media SET title = :newTitle WHERE id = :id")
     suspend fun renameMedia(id: Long, newTitle: String)
 
+    @Query("UPDATE downloaded_media SET title = :newTitle, localUri = :newUri WHERE id = :id")
+    suspend fun updateTitleAndUri(id: Long, newTitle: String, newUri: String)
+
+    @Query("UPDATE downloaded_media SET category = :newCategory, localUri = :newUri WHERE id = :id")
+    suspend fun updateCategoryAndUri(id: Long, newCategory: String, newUri: String)
+
     @Query("UPDATE downloaded_media SET isSyncedToCloud = :synced, cloudProvider = :provider WHERE id = :id")
     suspend fun updateSyncStatus(id: Long, synced: Boolean, provider: String)
 

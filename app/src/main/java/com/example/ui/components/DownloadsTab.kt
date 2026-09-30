@@ -29,6 +29,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.DriveFileMove
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.HourglassTop
 import androidx.compose.material.icons.filled.Image
@@ -105,6 +106,7 @@ fun DownloadsTab(
     onCancelDownload: (Long) -> Unit,
     onPlayMedia: (DownloadedMedia) -> Unit,
     onRenameMedia: (DownloadedMedia) -> Unit,
+    onMoveMedia: (DownloadedMedia) -> Unit = {},
     onDeleteMedia: (Long) -> Unit,
     onSyncToCloud: (DownloadedMedia, String) -> Unit,
     onShareMedia: (DownloadedMedia) -> Unit,
@@ -396,6 +398,7 @@ fun DownloadsTab(
                                     item = item,
                                     onPlay = { onPlayMedia(item) },
                                     onRename = { onRenameMedia(item) },
+                                    onMove = { onMoveMedia(item) },
                                     onDelete = { onDeleteMedia(item.id) },
                                     onSyncCloud = { onSyncToCloud(item, "Firestore") },
                                     onShare = { onShareMedia(item) }
@@ -728,7 +731,8 @@ fun CompletedDownloadCard(
     onRename: () -> Unit,
     onDelete: () -> Unit,
     onSyncCloud: () -> Unit,
-    onShare: () -> Unit
+    onShare: () -> Unit,
+    onMove: () -> Unit = {}
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
 
@@ -836,6 +840,14 @@ fun CompletedDownloadCard(
                         onClick = {
                             menuExpanded = false
                             onRename()
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Move to Folder") },
+                        leadingIcon = { Icon(Icons.Default.DriveFileMove, null) },
+                        onClick = {
+                            menuExpanded = false
+                            onMove()
                         }
                     )
                     DropdownMenuItem(

@@ -41,6 +41,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
@@ -56,9 +57,13 @@ import com.example.ui.components.LockScreen
 import com.example.ui.components.MediaPlayerDialog
 import com.example.ui.components.MediaPreviewDialog
 import com.example.ui.components.MediaSnifferBottomSheet
-import com.example.ui.components.RenameFileDialog
+import com.example.ui.components.RenameMediaDialog
+import com.example.ui.components.MoveMediaDialog
+import com.example.ui.components.DeleteConfirmDialog
 import com.example.ui.components.SettingsTab
 import com.example.ui.components.SitesHubTab
+import com.example.ui.components.SnifferDownloadBottomSheet
+import com.example.ui.components.SnifferDownloadFloatingBar
 import com.example.ui.theme.MediaFetchTheme
 import com.example.ui.viewmodel.AppTab
 import com.example.ui.viewmodel.MainViewModel
@@ -81,6 +86,7 @@ class MainActivity : FragmentActivity() {
 
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        com.example.data.util.ChromiumCacheHelper.prepareDirectories(this)
 
         viewModel = ViewModelProvider(
             this,
@@ -152,7 +158,10 @@ fun MainAppScreen(
     val sortOption by viewModel.sortOption.collectAsState()
     val layoutStyle by viewModel.layoutStyle.collectAsState()
     val selectedMediaForPlayer by viewModel.selectedMediaForPlayer.collectAsState()
+    val miniPlayerMedia by viewModel.miniPlayerMedia.collectAsState()
     val renameTarget by viewModel.renameTarget.collectAsState()
+    val moveTarget by viewModel.moveTarget.collectAsState()
+    val deleteTarget by viewModel.deleteTarget.collectAsState()
     val themeMode by viewModel.themeMode.collectAsState()
     val accentColor by viewModel.accentColor.collectAsState()
     val isBatteryRestricted by viewModel.isBatteryRestricted.collectAsState()
@@ -162,6 +171,9 @@ fun MainAppScreen(
     val previewDetectedMedia by viewModel.previewDetectedMedia.collectAsState()
     val media3Queue by viewModel.media3Queue.collectAsState()
     val isAutoQueueMedia3 by viewModel.isAutoQueueMedia3.collectAsState()
+    val snifferDownloads by viewModel.snifferDownloads.collectAsState()
+    val isSnifferDownloadSheetOpen by viewModel.isSnifferDownloadSheetOpen.collectAsState()
+    val isSnifferFloatingBarDismissed by viewModel.isSnifferFloatingBarDismissed.collectAsState()
 
     Box(modifier = Modifier.fillMaxSize()) {
         Scaffold(
@@ -306,6 +318,22 @@ fun MainAppScreen(
                                 },
                                 onToggleDesktopMode = {
                                     viewModel.toggleDesktopMode()
+                                },
+                                onDirectDownloadMedia = { media ->
+                                    viewModel.downloadMedia(media)
+                                },
+                                onPreviewDetectedMedia = { media ->
+                                    viewModel.setPreviewMedia(media)
+                                },
+                                bookmarks = bookmarks,
+                                onSaveBookmark = { title, url, category, isPinned ->
+                                    viewModel.saveBookmark(title, url, category, isPinned)
+                                },
+                                onDeleteBookmark = { id ->
+                                    viewModel.deleteBookmark(id)
+                                },
+                                onDeleteBookmarkByUrl = { url ->
+                                    viewModel.deleteBookmarkByUrl(url)
                                 }
                             )
                         }
@@ -329,7 +357,12 @@ fun MainAppScreen(
                                 onCancelDownload = { viewModel.cancelDownload(it) },
                                 onPlayMedia = { viewModel.openMediaPlayer(it) },
                                 onRenameMedia = { viewModel.openRenameDialog(it) },
-                                onDeleteMedia = { viewModel.deleteMedia(it) },
+                                onMoveMedia = { viewModel.openMoveDialog(it) },
+                                onDeleteMedia = { id ->
+                                    val target = completedMedia.find { it.id == id }
+                                        ?: DownloadedMedia(id = id, title = "File", sourceUrl = "")
+                                    viewModel.openDeleteDialog(target)
+                                },
                                 onSyncToCloud = { media, provider ->
                                     if (provider == "Firestore") viewModel.syncMediaToFirestore(media)
                                     else viewModel.syncMediaToCloud(media, provider)
@@ -350,11 +383,20 @@ fun MainAppScreen(
                                 onCategoryChange = { viewModel.selectedCategoryFilter.value = it },
                                 onSortChange = { viewModel.sortOption.value = it },
                                 onLayoutChange = { viewModel.layoutStyle.value = it },
-                                onPlayMedia = { viewModel.openMediaPlayer(it) },
+                                onPlayMedia = { viewModel.playInMiniPlayer(it) },
                                 onRenameClick = { viewModel.openRenameDialog(it) },
-                                onDeleteMedia = { viewModel.deleteMedia(it) },
+                                onMoveClick = { viewModel.openMoveDialog(it) },
+                                onDeleteMedia = { id ->
+                                    val target = filteredFiles.find { it.id == id }
+                                        ?: completedMedia.find { it.id == id }
+                                        ?: DownloadedMedia(id = id, title = "File", sourceUrl = "")
+                                    viewModel.openDeleteDialog(target)
+                                },
                                 onSyncCloud = { viewModel.syncMediaToFirestore(it) },
-                                onShareMedia = onShareMedia
+                                onShareMedia = onShareMedia,
+                                miniPlayerMedia = miniPlayerMedia,
+                                onMiniPlayerClose = { viewModel.closeMiniPlayer() },
+                                onOpenFullscreenPlayer = { viewModel.openMediaPlayer(it) }
                             )
                         }
 
@@ -411,6 +453,17 @@ fun MainAppScreen(
                         }
                     }
                 }
+
+                // Floating Status Bar tracking active downloads using WorkManager progress
+                SnifferDownloadFloatingBar(
+                    activeDownloads = snifferDownloads,
+                    isDismissed = isSnifferFloatingBarDismissed,
+                    onExpandSheet = { viewModel.openSnifferDownloadSheet(true) },
+                    onDismiss = { viewModel.dismissSnifferFloatingBar() },
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(horizontal = 14.dp, vertical = 8.dp)
+                )
             }
         }
 
@@ -468,10 +521,43 @@ fun MainAppScreen(
 
         // Rename dialog
         renameTarget?.let { media ->
-            RenameFileDialog(
-                currentName = media.title,
+            RenameMediaDialog(
+                media = media,
                 onDismiss = { viewModel.openRenameDialog(null) },
                 onConfirm = { newTitle -> viewModel.renameMedia(media.id, newTitle) }
+            )
+        }
+
+        // Move dialog
+        moveTarget?.let { media ->
+            MoveMediaDialog(
+                media = media,
+                onDismiss = { viewModel.openMoveDialog(null) },
+                onConfirm = { targetCategory -> viewModel.moveMedia(media.id, targetCategory) }
+            )
+        }
+
+        // Delete confirmation dialog
+        deleteTarget?.let { media ->
+            DeleteConfirmDialog(
+                media = media,
+                onDismiss = { viewModel.openDeleteDialog(null) },
+                onConfirm = { viewModel.deleteMedia(media.id) }
+            )
+        }
+
+        // Sniffer Download Progress Bottom Sheet (WorkManager Progress Tracking)
+        if (isSnifferDownloadSheetOpen) {
+            SnifferDownloadBottomSheet(
+                activeDownloads = snifferDownloads,
+                onDismiss = { viewModel.openSnifferDownloadSheet(false) },
+                onPauseDownload = { id -> viewModel.pauseDownload(id) },
+                onResumeDownload = { id -> viewModel.resumeDownload(id) },
+                onCancelDownload = { id -> viewModel.cancelDownload(id) },
+                onNavigateToDownloads = {
+                    viewModel.openSnifferDownloadSheet(false)
+                    viewModel.selectTab(AppTab.DOWNLOADS)
+                }
             )
         }
     }

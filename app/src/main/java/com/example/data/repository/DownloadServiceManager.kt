@@ -20,7 +20,7 @@ import kotlinx.coroutines.launch
 import java.io.File
 
 class DownloadServiceManager(
-    private val context: Context,
+    val context: Context,
     private val mediaDao: MediaDao,
     private val coroutineScope: CoroutineScope
 ) {

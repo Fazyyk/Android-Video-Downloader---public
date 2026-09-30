@@ -16,6 +16,8 @@ import com.example.data.repository.MediaRepository
 import com.example.data.repository.SecurityPreferences
 import com.example.data.repository.ThemePreferences
 import com.example.data.worker.MediaDetectionHub
+import com.example.data.worker.SnifferDownloadProgress
+import com.example.data.worker.WorkManagerDownloadTracker
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -102,6 +104,34 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun removeMedia3Download(id: String) {
         mediaBrowserService.removeQueueItem(id)
+    }
+
+    // WorkManager Progress Tracking for Sniffer Active Downloads
+    private val workManagerTracker = WorkManagerDownloadTracker(application, database.mediaDao())
+    val snifferDownloads: StateFlow<List<SnifferDownloadProgress>> = workManagerTracker
+        .getActiveSnifferDownloadsFlow()
+        .stateIn(
+            viewModelScope,
+            SharingStarted.WhileSubscribed(5000),
+            emptyList()
+        )
+
+    private val _isSnifferDownloadSheetOpen = MutableStateFlow(false)
+    val isSnifferDownloadSheetOpen: StateFlow<Boolean> = _isSnifferDownloadSheetOpen.asStateFlow()
+
+    private val _isSnifferFloatingBarDismissed = MutableStateFlow(false)
+    val isSnifferFloatingBarDismissed: StateFlow<Boolean> = _isSnifferFloatingBarDismissed.asStateFlow()
+
+    fun openSnifferDownloadSheet(open: Boolean) {
+        _isSnifferDownloadSheetOpen.value = open
+    }
+
+    fun dismissSnifferFloatingBar() {
+        _isSnifferFloatingBarDismissed.value = true
+    }
+
+    fun showSnifferFloatingBar() {
+        _isSnifferFloatingBarDismissed.value = false
     }
 
     // Navigation & Tabs
@@ -233,9 +263,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _selectedMediaForPlayer = MutableStateFlow<DownloadedMedia?>(null)
     val selectedMediaForPlayer: StateFlow<DownloadedMedia?> = _selectedMediaForPlayer.asStateFlow()
 
+    // Mini player preview (Media3 in local file management)
+    private val _miniPlayerMedia = MutableStateFlow<DownloadedMedia?>(null)
+    val miniPlayerMedia: StateFlow<DownloadedMedia?> = _miniPlayerMedia.asStateFlow()
+
+    fun playInMiniPlayer(media: DownloadedMedia?) {
+        _miniPlayerMedia.value = media
+    }
+
+    fun closeMiniPlayer() {
+        _miniPlayerMedia.value = null
+    }
+
     // Rename dialog
     private val _renameTarget = MutableStateFlow<DownloadedMedia?>(null)
     val renameTarget: StateFlow<DownloadedMedia?> = _renameTarget.asStateFlow()
+
+    // Move dialog
+    private val _moveTarget = MutableStateFlow<DownloadedMedia?>(null)
+    val moveTarget: StateFlow<DownloadedMedia?> = _moveTarget.asStateFlow()
+
+    // Delete dialog
+    private val _deleteTarget = MutableStateFlow<DownloadedMedia?>(null)
+    val deleteTarget: StateFlow<DownloadedMedia?> = _deleteTarget.asStateFlow()
 
     // Add Bookmark dialog
     private val _isAddBookmarkOpen = MutableStateFlow(false)
@@ -396,15 +446,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun downloadAllDetectedMedia() {
+        _isSnifferFloatingBarDismissed.value = false
         val list = _detectedMediaList.value
         list.forEach { item ->
             downloadMedia(item)
         }
         _isMediaSnifferOpen.value = false
-        _currentTab.value = AppTab.DOWNLOADS
     }
 
     fun downloadMedia(item: DetectedMedia) {
+        _isSnifferFloatingBarDismissed.value = false
         val category = when (item.mediaType) {
             MediaType.VIDEO -> "VIDEO"
             MediaType.AUDIO -> "AUDIO"
@@ -418,17 +469,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             category = category
         )
         _isMediaSnifferOpen.value = false
-        _currentTab.value = AppTab.DOWNLOADS
     }
 
     fun downloadDirectUrl(url: String, title: String, category: String = "VIDEO") {
+        _isSnifferFloatingBarDismissed.value = false
         repository.downloadManager.startDownload(
             sourceUrl = url,
             title = title.ifBlank { "Download_${System.currentTimeMillis()}" },
             mimeType = if (category == "AUDIO") "audio/mpeg" else "video/mp4",
             category = category
         )
-        _currentTab.value = AppTab.DOWNLOADS
     }
 
     fun pauseDownload(id: Long) {
@@ -451,6 +501,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _renameTarget.value = media
     }
 
+    fun openMoveDialog(media: DownloadedMedia?) {
+        _moveTarget.value = media
+    }
+
+    fun openDeleteDialog(media: DownloadedMedia?) {
+        _deleteTarget.value = media
+    }
+
     fun renameMedia(id: Long, newTitle: String) {
         viewModelScope.launch {
             repository.renameMedia(id, newTitle)
@@ -458,9 +516,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun moveMedia(id: Long, targetCategory: String) {
+        viewModelScope.launch {
+            repository.moveMedia(id, targetCategory)
+            _moveTarget.value = null
+        }
+    }
+
     fun deleteMedia(id: Long) {
         viewModelScope.launch {
             repository.deleteMedia(id)
+            if (_deleteTarget.value?.id == id) {
+                _deleteTarget.value = null
+            }
         }
     }
 
@@ -481,18 +549,49 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun addBookmark(title: String, url: String, category: String, isAdult: Boolean = false) {
+        saveBookmark(title, url, category, isPinned = false, isAdult = isAdult)
+    }
+
+    fun saveBookmark(title: String, url: String, category: String, isPinned: Boolean = false, isAdult: Boolean = false) {
         viewModelScope.launch {
+            val cleanUrl = if (url.startsWith("http://") || url.startsWith("https://")) url.trim() else "https://${url.trim()}"
+            val existing = bookmarks.value.find { it.url.trim().removeSuffix("/").equals(cleanUrl.removeSuffix("/"), ignoreCase = true) }
             val bookmark = WebBookmark(
+                id = existing?.id ?: 0L,
                 title = title.ifBlank { "Bookmark" },
-                url = if (url.startsWith("http")) url else "https://$url",
+                url = cleanUrl,
                 category = category.ifBlank { "Custom" },
-                description = "Custom bookmarked site",
-                iconName = "bookmark",
-                isPinned = false,
+                description = "Bookmarked Media Site",
+                iconName = when {
+                    category.contains("Video", ignoreCase = true) -> "movie"
+                    category.contains("Audio", ignoreCase = true) -> "audiotrack"
+                    else -> "bookmark"
+                },
+                isPinned = isPinned,
                 isAdultCategory = isAdult
             )
             repository.addBookmark(bookmark)
             _isAddBookmarkOpen.value = false
+        }
+    }
+
+    fun isUrlBookmarked(url: String): Boolean {
+        if (url.isBlank()) return false
+        val cleanUrl = url.trim().removeSuffix("/").lowercase()
+        return bookmarks.value.any {
+            it.url.trim().removeSuffix("/").lowercase() == cleanUrl
+        }
+    }
+
+    fun deleteBookmarkByUrl(url: String) {
+        viewModelScope.launch {
+            val cleanUrl = url.trim().removeSuffix("/")
+            val target = bookmarks.value.find { it.url.trim().removeSuffix("/").equals(cleanUrl, ignoreCase = true) }
+            if (target != null) {
+                repository.deleteBookmark(target.id)
+            } else {
+                repository.deleteBookmarkByUrl(url.trim())
+            }
         }
     }
 

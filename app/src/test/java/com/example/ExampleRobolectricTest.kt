@@ -8,11 +8,15 @@ import com.example.data.repository.SecurityPreferences
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.flow.firstOrNull
+import kotlinx.coroutines.flow.first
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
@@ -403,6 +407,258 @@ class ExampleRobolectricTest {
     // Verify it was added to the Media3 queue
     val queue = service.media3Queue.value
     assertTrue(queue.any { it.uri.toString() == sampleUrl })
+  }
+
+  @Test
+  fun `sniffer download progress model accurately reports state and telemetry`() {
+    val progressItem = com.example.data.worker.SnifferDownloadProgress(
+      workId = "work-1234",
+      mediaId = 42L,
+      title = "Sample Sniffed Video",
+      sourceUrl = "https://example.com/video.mp4",
+      progress = 65,
+      speed = "3.5 MB/s",
+      eta = "4s remaining",
+      state = androidx.work.WorkInfo.State.RUNNING,
+      category = "VIDEO"
+    )
+
+    assertEquals("Downloading", progressItem.stateLabel)
+    assertEquals(65, progressItem.progress)
+    assertEquals("3.5 MB/s", progressItem.speed)
+    assertEquals("4s remaining", progressItem.eta)
+    assertTrue(progressItem.isRunning)
+    assertFalse(progressItem.isEnqueued)
+  }
+
+  @Test
+  fun `work manager download tracker emits active downloads combined with room database`() = runBlocking {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val database = com.example.data.db.AppDatabase.getInstance(context)
+    val mediaDao = database.mediaDao()
+
+    val testMedia = com.example.data.model.DownloadedMedia(
+      title = "Sniffed Movie Clip",
+      sourceUrl = "https://example.com/clip.mp4",
+      localUri = "",
+      downloadProgress = 40,
+      status = "DOWNLOADING",
+      downloadSpeedText = "2.1 MB/s",
+      etaText = "6s remaining",
+      category = "VIDEO"
+    )
+    val id = mediaDao.insert(testMedia)
+
+    val tracker = com.example.data.worker.WorkManagerDownloadTracker(context, mediaDao)
+    val activeFlow = tracker.getActiveSnifferDownloadsFlow()
+
+    val firstEmission = activeFlow.firstOrNull()
+    assertNotNull(firstEmission)
+    assertTrue(firstEmission!!.any { it.mediaId == id && it.title == "Sniffed Movie Clip" })
+
+    val item = firstEmission.first { it.mediaId == id }
+    assertEquals(40, item.progress)
+    assertEquals("2.1 MB/s", item.speed)
+    assertEquals("6s remaining", item.eta)
+
+    // Cleanup
+    mediaDao.deleteById(id)
+  }
+
+  @Test
+  fun `chromium cache helper ensures all http cache and crashpad directories exist`() {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    com.example.data.util.ChromiumCacheHelper.prepareDirectories(context)
+
+    val cacheDir = context.cacheDir
+    val jsDir = java.io.File(cacheDir, "WebView/Default/HTTP Cache/Code Cache/js")
+    val wasmDir = java.io.File(cacheDir, "WebView/Default/HTTP Cache/Code Cache/wasm")
+    val indexDir = java.io.File(cacheDir, "WebView/Default/HTTP Cache/index-dir")
+    val crashpadAttachments = java.io.File(cacheDir, "WebView/Crashpad/attachments")
+    val knownCrashpadReport = java.io.File(crashpadAttachments, "7fac6a52-9500-47b9-a5e3-aef5ab395ad6")
+
+    assertTrue(jsDir.exists())
+    assertTrue(jsDir.isDirectory)
+    assertTrue(wasmDir.exists())
+    assertTrue(wasmDir.isDirectory)
+    assertTrue(indexDir.exists())
+    assertTrue(indexDir.isDirectory)
+    assertTrue(crashpadAttachments.exists())
+    assertTrue(crashpadAttachments.isDirectory)
+    assertTrue(knownCrashpadReport.exists())
+    assertTrue(knownCrashpadReport.isDirectory)
+  }
+
+  @Test
+  fun `rename move and delete media manage files on disk and update room db`() = kotlinx.coroutines.test.runTest {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val database = com.example.data.db.AppDatabase.getInstance(context)
+    val mediaDao = database.mediaDao()
+    val bookmarkDao = database.bookmarkDao()
+    val downloadManager = com.example.data.repository.DownloadServiceManager(context, mediaDao, this)
+    val cloudSync = com.example.data.repository.CloudSyncManager(context)
+    val firestoreSync = com.example.data.repository.FirestoreSyncManager(context, mediaDao)
+    val securityPrefs = com.example.data.repository.SecurityPreferences(context)
+
+    val repository = com.example.data.repository.MediaRepository(
+      mediaDao = mediaDao,
+      bookmarkDao = bookmarkDao,
+      downloadManager = downloadManager,
+      cloudSyncManager = cloudSync,
+      firestoreSyncManager = firestoreSync,
+      securityPrefs = securityPrefs
+    )
+
+    // 1. Create a dummy file on disk
+    val testFolder = java.io.File(context.filesDir, "test_files").apply { mkdirs() }
+    val initialFile = java.io.File(testFolder, "nature_doc.mp4").apply {
+      writeText("sample video binary dummy data")
+    }
+    assertTrue(initialFile.exists())
+
+    val mediaItem = DownloadedMedia(
+      title = "nature_doc",
+      sourceUrl = "https://example.com/nature_doc.mp4",
+      mimeType = "video/mp4",
+      category = "VIDEO",
+      fileSizeBytes = initialFile.length(),
+      localUri = android.net.Uri.fromFile(initialFile).toString(),
+      status = "COMPLETED"
+    )
+    val id = mediaDao.insert(mediaItem)
+
+    // 2. Test Rename
+    repository.renameMedia(id, "renamed_nature_documentary")
+    val renamedItem = mediaDao.getMediaById(id)
+    assertNotNull(renamedItem)
+    assertEquals("renamed_nature_documentary", renamedItem!!.title)
+    val renamedFile = java.io.File(android.net.Uri.parse(renamedItem.localUri).path!!)
+    assertTrue(renamedFile.exists())
+    assertEquals("renamed_nature_documentary.mp4", renamedFile.name)
+
+    // 3. Test Move to AUDIO (Music folder)
+    repository.moveMedia(id, "AUDIO")
+    val movedItem = mediaDao.getMediaById(id)
+    assertNotNull(movedItem)
+    assertEquals("AUDIO", movedItem!!.category)
+    val movedFile = java.io.File(android.net.Uri.parse(movedItem.localUri).path!!)
+    assertTrue(movedFile.exists())
+    assertTrue(movedFile.parentFile!!.name.equals("Music", ignoreCase = true))
+
+    // 4. Test Delete
+    repository.deleteMedia(id)
+    val deletedItem = mediaDao.getMediaById(id)
+    assertNull(deletedItem)
+    assertFalse(movedFile.exists())
+  }
+
+  @Test
+  fun `mini player state management allows previewing and dismissing media`() = kotlinx.coroutines.test.runTest {
+    val context = ApplicationProvider.getApplicationContext<android.app.Application>()
+    val viewModel = com.example.ui.viewmodel.MainViewModel(context)
+
+    assertNull(viewModel.miniPlayerMedia.value)
+
+    val previewItem = DownloadedMedia(
+      id = 42L,
+      title = "ambient_music_sample",
+      sourceUrl = "https://example.com/ambient.mp3",
+      category = "AUDIO",
+      status = "COMPLETED"
+    )
+
+    // Play in mini player
+    viewModel.playInMiniPlayer(previewItem)
+    assertEquals(previewItem, viewModel.miniPlayerMedia.value)
+    assertEquals("ambient_music_sample", viewModel.miniPlayerMedia.value?.title)
+
+    // Close mini player
+    viewModel.closeMiniPlayer()
+    assertNull(viewModel.miniPlayerMedia.value)
+  }
+
+  @Test
+  fun `media sniffer engine detects audio and video streams and integrates with browser downloading in view model`() = kotlinx.coroutines.test.runTest {
+    val context = ApplicationProvider.getApplicationContext<android.app.Application>()
+    val viewModel = com.example.ui.viewmodel.MainViewModel(context)
+
+    // 1. Test MediaSnifferEngine URL detection
+    val videoUrl = "https://example.com/assets/wildlife_1080p.mp4?token=abc"
+    val sniffedVideo = com.example.data.util.MediaSnifferEngine.sniffUrl(
+      rawUrl = videoUrl,
+      pageTitle = "Wildlife Documentary HD"
+    )
+    assertNotNull(sniffedVideo)
+    assertEquals(com.example.data.model.MediaType.VIDEO, sniffedVideo!!.mediaType)
+    assertEquals("mp4", sniffedVideo.extension)
+    assertTrue(sniffedVideo.quality.contains("1080p"))
+
+    val audioUrl = "https://example.com/music/podcast_episode_12.mp3"
+    val sniffedAudio = com.example.data.util.MediaSnifferEngine.sniffUrl(
+      rawUrl = audioUrl,
+      pageTitle = "Tech Talk Podcast"
+    )
+    assertNotNull(sniffedAudio)
+    assertEquals(com.example.data.model.MediaType.AUDIO, sniffedAudio!!.mediaType)
+    assertEquals("mp3", sniffedAudio.extension)
+
+    // 2. Add detected media to ViewModel
+    viewModel.addDetectedMedia(sniffedVideo)
+    viewModel.addDetectedMedia(sniffedAudio)
+
+    val detectedList = viewModel.detectedMediaList.value
+    assertTrue(detectedList.any { it.url == videoUrl })
+    assertTrue(detectedList.any { it.url == audioUrl })
+
+    // 3. Initiate download from sniffed media
+    viewModel.openMediaSniffer(true)
+    assertTrue(viewModel.isMediaSnifferOpen.value)
+
+    val downloadId = viewModel.repository.downloadManager.enqueueDownload(
+      sourceUrl = sniffedVideo.url,
+      title = sniffedVideo.title,
+      mimeType = sniffedVideo.mimeType,
+      category = "VIDEO"
+    )
+    assertTrue(downloadId > 0)
+
+    val database = com.example.data.db.AppDatabase.getInstance(context)
+    val dbItem = database.mediaDao().getMediaById(downloadId)
+    assertNotNull(dbItem)
+    assertEquals(videoUrl, dbItem!!.sourceUrl)
+    assertEquals("VIDEO", dbItem.category)
+
+    viewModel.downloadMedia(sniffedAudio)
+    assertFalse(viewModel.isMediaSnifferOpen.value)
+  }
+
+  @Test
+  fun `browser bookmarking system allows saving, pinning, checking, and removing favorite media websites`() = kotlinx.coroutines.test.runTest {
+    val context = ApplicationProvider.getApplicationContext<android.app.Application>()
+    val database = com.example.data.db.AppDatabase.getInstance(context)
+    val bookmarkDao = database.bookmarkDao()
+
+    val testSiteUrl = "https://example.com/stream-hub"
+    val testSiteTitle = "Ultra Stream Hub"
+
+    // 1. Direct DAO verification
+    val bookmark = com.example.data.model.WebBookmark(
+      title = testSiteTitle,
+      url = testSiteUrl,
+      category = "Video Portals",
+      isPinned = true
+    )
+    val id = bookmarkDao.insert(bookmark)
+    assertTrue(id > 0)
+
+    val allBookmarks = bookmarkDao.getAllBookmarks()
+    val initialList = allBookmarks.first()
+    assertTrue(initialList.any { it.url == testSiteUrl && it.isPinned })
+
+    // 2. Delete by URL
+    bookmarkDao.deleteByUrl(testSiteUrl)
+    val updatedList = allBookmarks.first()
+    assertFalse(updatedList.any { it.url == testSiteUrl })
   }
 }
 

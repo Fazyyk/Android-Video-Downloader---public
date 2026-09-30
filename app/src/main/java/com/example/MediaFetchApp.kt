@@ -4,6 +4,7 @@ import android.app.Application
 import android.system.Os
 import android.util.Log
 import androidx.work.Configuration
+import com.example.data.util.ChromiumCacheHelper
 import java.io.File
 
 class MediaFetchApp : Application(), Configuration.Provider {
@@ -25,25 +26,9 @@ class MediaFetchApp : Application(), Configuration.Provider {
             android.webkit.WebView.enableSlowWholeDocumentDraw()
         } catch (_: Throwable) {}
 
-        try {
-            // Pre-initialize WebView HTTP Code Cache directories (js and wasm)
-            // to prevent Chromium simple_file_enumerator ENOENT errors
-            val codeCacheDir = File(cacheDir, "WebView/Default/HTTP Cache/Code Cache")
-            val wasmDir = File(codeCacheDir, "wasm")
-            val jsDir = File(codeCacheDir, "js")
-            if (!wasmDir.exists()) {
-                wasmDir.mkdirs()
-            }
-            if (!jsDir.exists()) {
-                jsDir.mkdirs()
-            }
-            wasmDir.setReadable(true, false)
-            wasmDir.setWritable(true, false)
-            wasmDir.setExecutable(true, false)
-            jsDir.setReadable(true, false)
-            jsDir.setWritable(true, false)
-            jsDir.setExecutable(true, false)
-        } catch (_: Throwable) {}
+        // Pre-initialize and sanitize WebView HTTP cache, index, and Crashpad directories
+        // to prevent Chromium simple_file_enumerator ENOENT errors and fake index write failures
+        ChromiumCacheHelper.prepareDirectories(this)
     }
 
     override val workManagerConfiguration: Configuration

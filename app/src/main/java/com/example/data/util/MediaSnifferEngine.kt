@@ -167,14 +167,15 @@ object MediaSnifferEngine {
     }
 
     private fun isIgnoredUrl(url: String): Boolean {
+        val cleanUrl = url.substringBefore('?')
         return url.contains("google-analytics") ||
                 url.contains("doubleclick.net") ||
                 url.contains("facebook.com/tr") ||
                 url.contains("analytics") ||
                 url.contains("tracking") ||
                 url.contains("favicon.ico") ||
-                url.contains(".css") ||
-                url.contains(".js") ||
+                cleanUrl.endsWith(".css") ||
+                (cleanUrl.endsWith(".js") && !url.contains(".m3u8") && !url.contains(".mp4") && !url.contains(".mp3") && !url.contains("videoplayback")) ||
                 url.contains("adservice")
     }
 

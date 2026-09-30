@@ -107,11 +107,85 @@ class MediaRepository(
         bookmarkDao.deleteById(id)
     }
 
+    suspend fun deleteBookmarkByUrl(url: String) {
+        bookmarkDao.deleteByUrl(url)
+    }
+
     suspend fun renameMedia(id: Long, newTitle: String) {
-        mediaDao.renameMedia(id, newTitle)
+        val trimmed = newTitle.trim()
+        if (trimmed.isBlank()) return
+        val item = mediaDao.getMediaById(id)
+        if (item != null && item.localUri.isNotBlank()) {
+            try {
+                val uri = android.net.Uri.parse(item.localUri)
+                val path = uri.path
+                if (path != null) {
+                    val currentFile = java.io.File(path)
+                    if (currentFile.exists()) {
+                        val ext = currentFile.extension
+                        val safeFileName = trimmed.replace(Regex("[^a-zA-Z0-9._-]"), "_")
+                        val newFileName = if (ext.isNotBlank()) "$safeFileName.$ext" else safeFileName
+                        val targetFile = java.io.File(currentFile.parentFile, newFileName)
+                        if (currentFile.renameTo(targetFile)) {
+                            mediaDao.updateTitleAndUri(id, trimmed, android.net.Uri.fromFile(targetFile).toString())
+                            return
+                        }
+                    }
+                }
+            } catch (_: Throwable) {}
+        }
+        mediaDao.renameMedia(id, trimmed)
+    }
+
+    suspend fun moveMedia(id: Long, targetCategory: String) {
+        val cat = targetCategory.trim().uppercase()
+        val item = mediaDao.getMediaById(id) ?: return
+        if (item.localUri.isNotBlank()) {
+            try {
+                val uri = android.net.Uri.parse(item.localUri)
+                val path = uri.path
+                if (path != null) {
+                    val currentFile = java.io.File(path)
+                    if (currentFile.exists()) {
+                        val subFolder = when (cat) {
+                            "AUDIO" -> "Music"
+                            "IMAGE" -> "Pictures"
+                            "DOCUMENT" -> "Documents"
+                            "VAULT" -> "Vault"
+                            else -> "Movies"
+                        }
+                        val baseDir = downloadManager.context.getExternalFilesDir(null)
+                            ?: downloadManager.context.filesDir
+                        val targetDir = java.io.File(baseDir, subFolder)
+                        if (!targetDir.exists()) {
+                            targetDir.mkdirs()
+                        }
+                        val destFile = java.io.File(targetDir, currentFile.name)
+                        if (currentFile.renameTo(destFile) || currentFile.copyTo(destFile, overwrite = true).also { currentFile.delete() } != null) {
+                            mediaDao.updateCategoryAndUri(id, cat, android.net.Uri.fromFile(destFile).toString())
+                            return
+                        }
+                    }
+                }
+            } catch (_: Throwable) {}
+        }
+        mediaDao.updateCategoryAndUri(id, cat, item.localUri)
     }
 
     suspend fun deleteMedia(id: Long) {
+        val item = mediaDao.getMediaById(id)
+        if (item != null && item.localUri.isNotBlank()) {
+            try {
+                val uri = android.net.Uri.parse(item.localUri)
+                val path = uri.path
+                if (path != null) {
+                    val file = java.io.File(path)
+                    if (file.exists()) {
+                        file.delete()
+                    }
+                }
+            } catch (_: Throwable) {}
+        }
         mediaDao.deleteById(id)
     }
 

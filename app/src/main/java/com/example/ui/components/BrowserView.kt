@@ -35,6 +35,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
@@ -42,17 +44,26 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.filled.Audiotrack
+import androidx.compose.material.icons.filled.Bookmark
+import androidx.compose.material.icons.filled.BookmarkBorder
 import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DesktopWindows
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SmartDisplay
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ElevatedButton
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -85,6 +96,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -92,9 +104,11 @@ import android.widget.Toast
 import com.example.data.media3.MediaBrowserInterceptorService
 import com.example.data.model.DetectedMedia
 import com.example.data.model.MediaType
+import com.example.data.model.WebBookmark
 import com.example.data.util.MediaSnifferEngine
 import com.example.data.worker.MediaDetectionHub
 import java.io.File
+import kotlinx.coroutines.delay
 import org.json.JSONArray
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -111,7 +125,13 @@ fun BrowserView(
     onOpenMediaSniffer: () -> Unit,
     onRequestPageScan: () -> Unit = {},
     onQuickDirectDownload: (String, String) -> Unit,
-    onToggleDesktopMode: () -> Unit
+    onToggleDesktopMode: () -> Unit,
+    onDirectDownloadMedia: ((DetectedMedia) -> Unit)? = null,
+    onPreviewDetectedMedia: ((DetectedMedia) -> Unit)? = null,
+    bookmarks: List<WebBookmark> = emptyList(),
+    onSaveBookmark: (title: String, url: String, category: String, isPinned: Boolean) -> Unit = { _, _, _, _ -> },
+    onDeleteBookmark: (Long) -> Unit = {},
+    onDeleteBookmarkByUrl: (String) -> Unit = {}
 ) {
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
@@ -121,7 +141,32 @@ fun BrowserView(
     var canGoBack by remember { mutableStateOf(false) }
     var canGoForward by remember { mutableStateOf(false) }
     var showDirectDownloadDialog by remember { mutableStateOf(false) }
+    var showBookmarkDialog by remember { mutableStateOf(false) }
+    var showBookmarksSheet by remember { mutableStateOf(false) }
+    var pageTitle by remember { mutableStateOf("") }
+    var latestSniffedMedia by remember { mutableStateOf<DetectedMedia?>(null) }
     val isWorkerScanning by MediaDetectionHub.isWorkerRunning.collectAsState()
+
+    val isCurrentBookmarked = remember(urlInput, bookmarks) {
+        val clean = urlInput.trim().removeSuffix("/").lowercase()
+        clean.isNotBlank() && bookmarks.any { it.url.trim().removeSuffix("/").lowercase() == clean }
+    }
+    val currentBookmarkItem = remember(urlInput, bookmarks) {
+        val clean = urlInput.trim().removeSuffix("/").lowercase()
+        bookmarks.firstOrNull { it.url.trim().removeSuffix("/").lowercase() == clean }
+    }
+
+    val handleDetectedMedia: (DetectedMedia) -> Unit = { media ->
+        latestSniffedMedia = media
+        onMediaDetected(media)
+    }
+
+    LaunchedEffect(latestSniffedMedia) {
+        if (latestSniffedMedia != null) {
+            delay(7000)
+            latestSniffedMedia = null
+        }
+    }
 
     LaunchedEffect(initialUrl) {
         if (initialUrl != urlInput && initialUrl.isNotBlank()) {
@@ -184,6 +229,22 @@ fun BrowserView(
                         Icon(
                             imageVector = Icons.AutoMirrored.Filled.ArrowForward,
                             contentDescription = "Forward",
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+
+                    IconButton(
+                        onClick = {
+                            focusManager.clearFocus()
+                            val homeUrl = "https://duckduckgo.com"
+                            urlInput = homeUrl
+                            webViewRef?.loadUrl(homeUrl)
+                        },
+                        modifier = Modifier.size(36.dp).testTag("browser_home_btn")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Home,
+                            contentDescription = "Home",
                             modifier = Modifier.size(20.dp)
                         )
                     }
@@ -297,6 +358,144 @@ fun BrowserView(
                             )
                         }
                     }
+
+                    // Bookmark Page Action Button
+                    IconButton(
+                        onClick = { showBookmarkDialog = true },
+                        modifier = Modifier
+                            .size(36.dp)
+                            .testTag("browser_bookmark_toggle_btn")
+                    ) {
+                        Icon(
+                            imageVector = if (isCurrentBookmarked) Icons.Default.Bookmark else Icons.Default.BookmarkBorder,
+                            contentDescription = if (isCurrentBookmarked) "Edit Bookmark" else "Bookmark Page",
+                            tint = if (isCurrentBookmarked) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+
+                    // Open Saved Bookmarks Hub Sheet
+                    IconButton(
+                        onClick = { showBookmarksSheet = true },
+                        modifier = Modifier
+                            .size(36.dp)
+                            .testTag("browser_bookmarks_hub_btn")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Star,
+                            contentDescription = "Saved Bookmarks",
+                            tint = if (bookmarks.isNotEmpty()) Color(0xFFF59E0B) else MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                }
+
+                // Quick Media Stream & Saved Bookmarks Bar
+                LazyRow(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 4.dp, bottom = 2.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    // Quick "Saved Bookmarks" button chip
+                    item {
+                        Surface(
+                            shape = RoundedCornerShape(14.dp),
+                            color = MaterialTheme.colorScheme.primaryContainer,
+                            modifier = Modifier
+                                .clickable { showBookmarksSheet = true }
+                                .testTag("quick_bar_bookmarks_btn")
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Bookmark,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                    modifier = Modifier.size(13.dp)
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(
+                                    text = "Saved (${bookmarks.size})",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                                )
+                            }
+                        }
+                    }
+
+                    // User's Real Saved Bookmarks from Room (pinned first)
+                    items(bookmarks.sortedByDescending { it.isPinned }.take(8), key = { it.id }) { bm ->
+                        Surface(
+                            shape = RoundedCornerShape(14.dp),
+                            color = if (bm.isPinned) MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.85f)
+                            else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                            modifier = Modifier
+                                .clickable {
+                                    focusManager.clearFocus()
+                                    urlInput = bm.url
+                                    webViewRef?.loadUrl(bm.url)
+                                }
+                                .testTag("browser_quick_bookmark_${bm.id}")
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                if (bm.isPinned) {
+                                    Icon(
+                                        imageVector = Icons.Default.Star,
+                                        contentDescription = null,
+                                        tint = Color(0xFFF59E0B),
+                                        modifier = Modifier.size(12.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(3.dp))
+                                }
+                                Text(
+                                    text = bm.title,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+                    }
+
+                    val presets = listOf(
+                        Triple("🎬 Big Buck Bunny (MP4)", "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4", MediaType.VIDEO),
+                        Triple("📡 Tears of Steel (HLS)", "https://demo.unified-streaming.com/k8s/features/stable/video/tears-of-steel/tears-of-steel.ism/.m3u8", MediaType.VIDEO),
+                        Triple("🎵 Sample Music (MP3)", "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3", MediaType.AUDIO),
+                        Triple("🏛️ Archive.org Movies", "https://archive.org/details/movies", MediaType.VIDEO),
+                        Triple("🖼️ Wikimedia Commons", "https://commons.wikimedia.org/wiki/Main_Page", MediaType.IMAGE),
+                        Triple("🔍 DuckDuckGo", "https://duckduckgo.com", MediaType.OTHER)
+                    )
+                    items(presets) { (label, url, _) ->
+                        Surface(
+                            shape = RoundedCornerShape(14.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                            modifier = Modifier
+                                .clickable {
+                                    focusManager.clearFocus()
+                                    urlInput = url
+                                    webViewRef?.loadUrl(url)
+                                }
+                                .testTag("preset_${label.take(8).trim()}")
+                        ) {
+                            Text(
+                                text = label,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Normal,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -317,19 +516,7 @@ fun BrowserView(
         Box(modifier = Modifier.weight(1f)) {
             AndroidView(
                 factory = { ctx ->
-                    try {
-                        val codeCacheDir = File(ctx.cacheDir, "WebView/Default/HTTP Cache/Code Cache")
-                        val jsDir = File(codeCacheDir, "js")
-                        val wasmDir = File(codeCacheDir, "wasm")
-                        if (!wasmDir.exists()) wasmDir.mkdirs()
-                        if (!jsDir.exists()) jsDir.mkdirs()
-                        wasmDir.setReadable(true, false)
-                        wasmDir.setWritable(true, false)
-                        wasmDir.setExecutable(true, false)
-                        jsDir.setReadable(true, false)
-                        jsDir.setWritable(true, false)
-                        jsDir.setExecutable(true, false)
-                    } catch (_: Exception) {}
+                    com.example.data.util.ChromiumCacheHelper.prepareDirectories(ctx)
 
                     WebView(ctx).apply {
                         setLayerType(View.LAYER_TYPE_SOFTWARE, null)
@@ -352,7 +539,7 @@ fun BrowserView(
 
                         // Register Media Sniffer JavaScript Bridges
                         val bridge = MediaJsBridge { media ->
-                            onMediaDetected(media)
+                            handleDetectedMedia(media)
                         }
                         addJavascriptInterface(bridge, "MediaSnifferBridge")
                         addJavascriptInterface(bridge, "MediaBridge")
@@ -360,7 +547,9 @@ fun BrowserView(
                         webChromeClient = object : WebChromeClient() {
                             override fun onProgressChanged(view: WebView?, newProgress: Int) {
                                 pageProgress = newProgress
-                                onUrlChanged(view?.url ?: "", view?.title ?: "", newProgress)
+                                val t = view?.title ?: ""
+                                if (t.isNotBlank()) pageTitle = t
+                                onUrlChanged(view?.url ?: "", t, newProgress)
                                 if (newProgress > 60) {
                                     view?.evaluateJavascript(MediaSnifferEngine.generateSnifferScript(), null)
                                 }
@@ -386,6 +575,7 @@ fun BrowserView(
                         webViewClient = object : WebViewClient() {
                             override fun onRenderProcessGone(view: WebView?, detail: RenderProcessGoneDetail?): Boolean {
                                 try {
+                                    com.example.data.util.ChromiumCacheHelper.prepareDirectories(ctx)
                                     view?.let {
                                         (it.parent as? ViewGroup)?.removeView(it)
                                         it.destroy()
@@ -467,7 +657,7 @@ fun BrowserView(
                                     )
                                     if (intercepted != null) {
                                         Handler(Looper.getMainLooper()).post {
-                                            onMediaDetected(intercepted)
+                                            handleDetectedMedia(intercepted)
                                         }
                                     } else {
                                         val sniffed = MediaSnifferEngine.sniffUrl(
@@ -477,7 +667,7 @@ fun BrowserView(
                                         )
                                         sniffed?.let { media ->
                                             Handler(Looper.getMainLooper()).post {
-                                                onMediaDetected(media)
+                                                handleDetectedMedia(media)
                                             }
                                         }
                                     }
@@ -500,6 +690,107 @@ fun BrowserView(
                 },
                 modifier = Modifier.fillMaxSize()
             )
+
+            // Real-time Sniffed Media Live Banner with 1-Tap Download
+            androidx.compose.animation.AnimatedVisibility(
+                visible = latestSniffedMedia != null,
+                enter = slideInVertically(initialOffsetY = { -it }) + fadeIn(),
+                exit = slideOutVertically(targetOffsetY = { -it }) + fadeOut(),
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(horizontal = 12.dp, vertical = 8.dp)
+            ) {
+                latestSniffedMedia?.let { sniffed ->
+                    Card(
+                        shape = RoundedCornerShape(16.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.primaryContainer
+                        ),
+                        elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .shadow(8.dp, RoundedCornerShape(16.dp))
+                            .testTag("sniffed_media_toast")
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = when (sniffed.mediaType) {
+                                    MediaType.VIDEO -> Icons.Default.Movie
+                                    MediaType.AUDIO -> Icons.Default.Audiotrack
+                                    MediaType.IMAGE -> Icons.Default.Image
+                                    else -> Icons.Default.SmartDisplay
+                                },
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(24.dp)
+                            )
+
+                            Spacer(modifier = Modifier.width(8.dp))
+
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Sniffed: ${sniffed.title}",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = "${sniffed.quality} • ${sniffed.extension.uppercase()} • ${sniffed.estimatedSize}",
+                                    fontSize = 10.sp,
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
+                                )
+                            }
+
+                            // 1-Tap Instant Download
+                            FilledTonalButton(
+                                onClick = {
+                                    if (onDirectDownloadMedia != null) {
+                                        onDirectDownloadMedia(sniffed)
+                                    } else {
+                                        onQuickDirectDownload(sniffed.url, sniffed.title)
+                                    }
+                                    latestSniffedMedia = null
+                                    Toast.makeText(context, "Started downloading ${sniffed.title}", Toast.LENGTH_SHORT).show()
+                                },
+                                shape = RoundedCornerShape(10.dp),
+                                modifier = Modifier
+                                    .height(34.dp)
+                                    .testTag("toast_download_btn")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Download,
+                                    contentDescription = "Download",
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Download", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            }
+
+                            Spacer(modifier = Modifier.width(4.dp))
+
+                            // Dismiss Button
+                            IconButton(
+                                onClick = { latestSniffedMedia = null },
+                                modifier = Modifier.size(28.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Close,
+                                    contentDescription = "Dismiss",
+                                    modifier = Modifier.size(16.dp),
+                                    tint = MaterialTheme.colorScheme.onPrimaryContainer
+                                )
+                            }
+                        }
+                    }
+                }
+            }
 
             // Floating "Media Detected" Pill at bottom right
             Column(
@@ -620,6 +911,52 @@ fun BrowserView(
             onConfirm = { url, title ->
                 showDirectDownloadDialog = false
                 onQuickDirectDownload(url, title)
+            }
+        )
+    }
+
+    if (showBookmarkDialog) {
+        AddEditBookmarkDialog(
+            initialTitle = currentBookmarkItem?.title ?: pageTitle.ifBlank { "Media Site" },
+            initialUrl = urlInput,
+            isAlreadyBookmarked = isCurrentBookmarked,
+            initialCategory = currentBookmarkItem?.category ?: "Video Portals",
+            initialIsPinned = currentBookmarkItem?.isPinned ?: true,
+            onDismiss = { showBookmarkDialog = false },
+            onSave = { title, url, category, isPinned ->
+                onSaveBookmark(title, url, category, isPinned)
+                showBookmarkDialog = false
+                Toast.makeText(context, "Saved bookmark: $title", Toast.LENGTH_SHORT).show()
+            },
+            onDelete = if (isCurrentBookmarked) {
+                {
+                    if (currentBookmarkItem != null) {
+                        onDeleteBookmark(currentBookmarkItem.id)
+                    } else {
+                        onDeleteBookmarkByUrl(urlInput)
+                    }
+                    showBookmarkDialog = false
+                    Toast.makeText(context, "Bookmark removed", Toast.LENGTH_SHORT).show()
+                }
+            } else null
+        )
+    }
+
+    if (showBookmarksSheet) {
+        BrowserBookmarksBottomSheet(
+            bookmarks = bookmarks,
+            currentUrl = urlInput,
+            currentPageTitle = pageTitle,
+            onDismiss = { showBookmarksSheet = false },
+            onSelectBookmark = { bm ->
+                focusManager.clearFocus()
+                urlInput = bm.url
+                webViewRef?.loadUrl(bm.url)
+            },
+            onDeleteBookmark = onDeleteBookmark,
+            onAddCurrentPage = {
+                showBookmarksSheet = false
+                showBookmarkDialog = true
             }
         )
     }
